@@ -773,8 +773,9 @@ func TestMaxAllocBoundsSliceAssign(t *testing.T) {
 	}
 	query, _ := Parse(`.[0:1] = [9]`)
 	code, _ := Compile(query)
-	if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
-		t.Errorf("slice assign on a big array: expected an allocation error, got a value")
+	// setpath wraps the allocLimitError, so match on the message.
+	if v, _ := code.Run(big).Next(); !strings.Contains(fmt.Sprint(v), "allocation exceeds") {
+		t.Errorf("slice assign on a big array: expected an allocation error, got %v", v)
 	}
 
 	q, _ := Parse(`.[1:3] = [9, 9]`)
