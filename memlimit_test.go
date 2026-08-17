@@ -1411,3 +1411,45 @@ func TestMaxAllocMonotonicAcrossCatch(t *testing.T) {
 		}
 	}
 }
+
+// The encoder is not the only thing that materializes a shared-reference DAG.
+// walk, flatten, tostream, and recurse ( .. ) each rebuild or enumerate every
+// logical node, so a tiny O(K) DAG with 2^K logical nodes expands under them
+// as well. Each must charge as it expands and stop at the limit, the same way
+// tojson does ( see TestMaxAllocBoundsEncoding ), not run on to OOM.
+func TestMaxAllocBoundsDAGTraversal(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	objDAG := `reduce range(35) as $_ (1; {a: ., b: .})`
+	arrDAG := `reduce range(35) as $_ ([1]; [., .])`
+	for _, src := range []string{
+		objDAG + ` | walk(.)`,
+		objDAG + ` | [tostream]`,
+		objDAG + ` | [..]`,
+		arrDAG + ` | flatten`,
+		arrDAG + ` | walk(.)`,
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		v, ok := code.Run(nil).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isErr := v.(error); !isErr || !strings.Contains(fmt.Sprint(v), "allocation exceeds") {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// the same traversals still work on an ordinary small value.
+	q2, _ := Parse(`walk(if type == "number" then . + 1 else . end)`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run([]any{1.0, 2.0}).Next(); !ok || fmt.Sprint(v2) != "[2 3]" {
+		t.Errorf("walk on small value: got %v", v2)
+	}
+}
