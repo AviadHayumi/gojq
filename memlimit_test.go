@@ -814,6 +814,32 @@ func TestMaxAllocBoundsFormatEscapers(t *testing.T) {
 	}
 }
 
+// implode builds a string from a codepoint array through a strings.Builder that
+// is bounded per rune, but sb.Grow(len(vs)) pre-allocated len(vs) bytes upfront,
+// so a huge input array forced that allocation before the per-rune check could
+// fire ( a 60M-element array reserved 60 MB under a 4 MB limit ). The Grow is now
+// capped at MaxAlloc; the per-rune check still bounds the actual writes.
+func TestMaxAllocBoundsImplode(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// 2M four-byte codepoints -> an ~8 MB string, over the limit.
+	big := make([]any, 2000000)
+	for i := range big {
+		big[i] = float64(0x10000)
+	}
+	query, _ := Parse(`implode`)
+	code, _ := Compile(query)
+	if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("implode on a huge codepoint array: expected an allocation error, got a value")
+	}
+
+	// a small implode still produces the exact string.
+	if v, ok := code.Run([]any{float64(104), float64(105)}).Next(); !ok || fmt.Sprint(v) != "hi" {
+		t.Errorf(`implode: got %v, want hi`, v)
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

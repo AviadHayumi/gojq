@@ -788,7 +788,14 @@ func funcImplode(v any) any {
 		return &func0TypeError{"implode", v}
 	}
 	var sb strings.Builder
-	sb.Grow(len(vs))
+	// Grow is only a capacity hint; cap it at the limit so a huge input array
+	// cannot force an upfront allocation past MaxAlloc before the per-rune check
+	// below has a chance to fire.
+	grow := len(vs)
+	if MaxAlloc > 0 && int64(grow) > MaxAlloc {
+		grow = int(MaxAlloc)
+	}
+	sb.Grow(grow)
 	for _, v := range vs {
 		if r, ok := toInt(v); ok {
 			if 0 <= r && r <= utf8.MaxRune {
