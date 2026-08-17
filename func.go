@@ -434,17 +434,27 @@ func add(xs iter.Seq[any]) any {
 				continue
 			case *strings.Builder:
 				w.WriteString(x)
+				if MaxAlloc > 0 && int64(w.Len()) > MaxAlloc {
+					return &allocLimitError{}
+				}
 				continue
 			}
 		case []any:
 			switch w := v.(type) {
 			case nil:
+				if arrayTooLarge(len(x)) {
+					return &allocLimitError{}
+				}
 				s := make([]any, len(x))
 				copy(s, x)
 				v = s
 				continue
 			case []any:
-				v = append(w, x...)
+				w = append(w, x...)
+				if arrayTooLarge(len(w)) {
+					return &allocLimitError{}
+				}
+				v = w
 				continue
 			}
 		case map[string]any:
@@ -454,6 +464,9 @@ func add(xs iter.Seq[any]) any {
 				continue
 			case map[string]any:
 				maps.Copy(w, x)
+				if MaxAlloc > 0 && int64(len(w))*24 > MaxAlloc {
+					return &allocLimitError{}
+				}
 				continue
 			}
 		}

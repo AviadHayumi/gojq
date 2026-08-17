@@ -455,3 +455,51 @@ func TestMaxAllocBoundsEncoding(t *testing.T) {
 		t.Errorf(`tojson: expected [1,"x",null], got %v`, v2)
 	}
 }
+
+
+// add accumulates the whole sum internally (a strings.Builder for strings, an
+// append for arrays, a merge for maps) and is charged only at the end, so on a
+// large input it built 1+ GB before the meter fired. bound the accumulation.
+func TestMaxAllocBoundsAdd(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	bigStr := strings.Repeat("a", 200000)
+	sharedStrs := make([]any, 2000)
+	for i := range sharedStrs {
+		sharedStrs[i] = bigStr
+	}
+	bigArr := make([]any, 50000)
+	for i := range bigArr {
+		bigArr[i] = float64(i)
+	}
+	sharedArrs := make([]any, 2000)
+	for i := range sharedArrs {
+		sharedArrs[i] = bigArr
+	}
+	for _, in := range []any{sharedStrs, sharedArrs} {
+		query, _ := Parse(`add | length`)
+		code, _ := Compile(query)
+		if v, _ := code.Run(in).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+			t.Errorf("add of a large shared-reference input: expected an allocation error, got a value")
+		}
+	}
+
+	// small add still returns the right values.
+	for _, c := range []struct {
+		src, in, want string
+	}{
+		{`add`, `[1,2,3,4]`, "10"},
+		{`add`, `["a","b","c"]`, "abc"},
+	} {
+		q, _ := Parse(c.src)
+		code, _ := Compile(q)
+		var iv any
+		jq, _ := Parse(c.in)
+		jc, _ := Compile(jq)
+		iv, _ = jc.Run(nil).Next()
+		if v, ok := code.Run(iv).Next(); !ok || fmt.Sprint(v) != c.want {
+			t.Errorf("add %s: expected %s, got %v", c.in, c.want, v)
+		}
+	}
+}
