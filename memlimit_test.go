@@ -255,3 +255,41 @@ func TestRegexpCacheBounded(t *testing.T) {
 		t.Errorf("regex broken after cache filled: r=%v err=%v", r, err)
 	}
 }
+
+
+// match with the "g" flag builds one map per match (plus one per capture group)
+// in a single make, and the result array is charged only shallowly, so a global
+// match on a moderate string materialized tens of MB under the limit. it must
+// now error, while a small match still returns correct results.
+func TestMaxAllocBoundsGlobalMatch(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := strings.Repeat("ab", 500000)
+	query, err := Parse(`[match("(a)(b)"; "g")] | length`)
+	if err != nil {
+		t.Fatalf("Parse: %s", err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile: %s", err)
+	}
+	v, ok := code.Run(big).Next()
+	if !ok {
+		t.Fatal("expected an error, got no result")
+	}
+	if _, isAlloc := v.(*allocLimitError); !isAlloc {
+		t.Errorf("expected *allocLimitError for a huge global match, got %v", v)
+	}
+
+	// a small match must still return its results under the same limit.
+	query2, _ := Parse(`[match("a"; "g") | .offset]`)
+	code2, _ := Compile(query2)
+	v2, ok := code2.Run("banana").Next()
+	if !ok {
+		t.Fatal("no result for small match")
+	}
+	if got, isArr := v2.([]any); !isArr || len(got) != 3 {
+		t.Errorf("small match: expected 3 offsets, got %v", v2)
+	}
+}

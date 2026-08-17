@@ -2031,12 +2031,23 @@ func funcMatch(v, re, fs, testing any, cache *reCache) any {
 		return r.MatchString(s)
 	}
 	var n int
+	capped := false
 	if strings.ContainsRune(flags, 'g') {
 		n = -1
+		if MaxAlloc > 0 {
+			// bound the number of matches so the result array (a map per match,
+			// plus one per capture group) cannot exceed MaxAlloc.
+			if lim := int(MaxAlloc/int64(600+r.NumSubexp()*256)) + 1; lim > 0 {
+				n, capped = lim, true
+			}
+		}
 	} else {
 		n = 1
 	}
 	xs := r.FindAllStringSubmatchIndex(s, n)
+	if capped && len(xs) >= n {
+		return &allocLimitError{}
+	}
 	res, names := make([]any, len(xs)), r.SubexpNames()
 	for i, x := range xs {
 		captures := make([]any, (len(x)-2)/2)
