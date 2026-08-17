@@ -881,6 +881,39 @@ func TestMaxAllocBoundsSetpathPadding(t *testing.T) {
 	}
 }
 
+// strftime / strflocaltime format a time with a format string taken as an
+// argument, which can come from input ( strftime(.field) ). timefmt.Format builds
+// the whole result in one pass and directives such as %A / %B / %c expand a
+// two-byte directive to many bytes, so a big input format amplified the output far
+// past the limit ( a 40 MB format of %A reached 358 MB ) before the value meter,
+// seeing only the finished string, could charge it. A format-length pre-check now
+// rejects a format whose worst-case expansion could exceed MaxAlloc.
+func TestMaxAllocBoundsStrftime(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	bigfmt := strings.Repeat("%A", 2<<20) // 4 MB of weekday directives
+	for _, src := range []string{
+		`. as $f | 1700000000 | gmtime | strftime($f)`,
+		`. as $f | 1700000000 | gmtime | strflocaltime($f)`,
+	} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(bigfmt).Next(); !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q on a huge format: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// realistic formats still produce the exact string.
+	q, _ := Parse(`1700000000 | gmtime | strftime("%Y-%m-%dT%H:%M:%SZ")`)
+	code, _ := Compile(q)
+	if v, ok := code.Run(nil).Next(); !ok || fmt.Sprint(v) != "2023-11-14T22:13:20Z" {
+		t.Errorf(`strftime: got %v, want 2023-11-14T22:13:20Z`, v)
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

@@ -2057,6 +2057,20 @@ func timeToEpoch(t time.Time) float64 {
 	return float64(t.Unix()) + float64(t.Nanosecond())/1e9
 }
 
+// boundedStrftime formats t with format but rejects a format long enough that
+// its expansion could pass MaxAlloc. timefmt.Format builds the whole result in
+// one pass, and directives such as %A / %B / %c expand a two-byte directive to
+// many bytes, so a big format taken from input ( strftime(.field) ) could
+// amplify far past the limit before the value meter, which sees only the
+// finished string, could charge it. The widest directive expands under 16x per
+// format byte, so this keeps a passing format's output under the limit.
+func boundedStrftime(t time.Time, format string) any {
+	if MaxAlloc > 0 && int64(len(format))*16 > MaxAlloc {
+		return &allocLimitError{}
+	}
+	return timefmt.Format(t, format)
+}
+
 func funcStrftime(v, x any) any {
 	if w, ok := toFloat(v); ok {
 		v = epochToArray(w, time.UTC)
@@ -2073,7 +2087,7 @@ func funcStrftime(v, x any) any {
 	if err != nil {
 		return &func1WrapError{"strftime", v, x, err}
 	}
-	return timefmt.Format(t, format)
+	return boundedStrftime(t, format)
 }
 
 func funcStrflocaltime(v, x any) any {
@@ -2092,7 +2106,7 @@ func funcStrflocaltime(v, x any) any {
 	if err != nil {
 		return &func1WrapError{"strflocaltime", v, x, err}
 	}
-	return timefmt.Format(t, format)
+	return boundedStrftime(t, format)
 }
 
 func funcStrptime(v, x any) any {
