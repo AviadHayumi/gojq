@@ -522,6 +522,9 @@ func funcReverse(v any) any {
 	if !ok {
 		return &func0TypeError{"reverse", v}
 	}
+	if arrayTooLarge(len(vs)) {
+		return &allocLimitError{}
+	}
 	ws := make([]any, len(vs))
 	for i, v := range vs {
 		ws[len(ws)-i-1] = v
@@ -726,6 +729,9 @@ func funcExplode(v any) any {
 	if !ok {
 		return &func0TypeError{"explode", v}
 	}
+	if arrayTooLarge(utf8.RuneCountInString(s)) {
+		return &allocLimitError{}
+	}
 	return explode(s)
 }
 
@@ -768,6 +774,9 @@ func funcSplit(v, x any) any {
 	t, ok := x.(string)
 	if !ok {
 		return &func0TypeError{"split", x}
+	}
+	if arrayTooLarge(strings.Count(s, t) + 1) {
+		return &allocLimitError{}
 	}
 	ss := strings.Split(s, t)
 	xs := make([]any, len(ss))

@@ -480,6 +480,9 @@ func funcOpDiv(_, l, r any) any {
 			if l == "" {
 				return []any{}
 			}
+			if arrayTooLarge(strings.Count(l, r) + 1) {
+				return &allocLimitError{}
+			}
 			xs := strings.Split(l, r)
 			vs := make([]any, len(xs))
 			for i, x := range xs {

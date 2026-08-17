@@ -35,3 +35,9 @@ func (env *env) charge(v any) bool {
 	env.alloc += allocSize(v)
 	return env.alloc > MaxAlloc
 }
+
+// arrayTooLarge reports whether a []any of n elements would exceed MaxAlloc.
+// Used to pre-check builtins that allocate an input-proportional array in one make().
+func arrayTooLarge(n int) bool {
+	return MaxAlloc > 0 && int64(n)*16 > MaxAlloc
+}
