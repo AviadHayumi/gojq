@@ -18,7 +18,7 @@ func (*allocLimitError) Error() string {
 func allocSize(v any) int64 {
 	switch t := v.(type) {
 	case string:
-		return int64(len(t))
+		return int64(len(t)) + 16 // string header (ptr + len)
 	case []any:
 		return int64(len(t))*16 + 16
 	case map[string]any:
@@ -30,14 +30,20 @@ func allocSize(v any) int64 {
 	}
 }
 
-// charge adds v's size to the running total and reports whether the limit
-// has now been exceeded.
-func (env *env) charge(v any) bool {
+// chargeBytes adds n to the running total and reports whether the limit has
+// now been exceeded.
+func (env *env) chargeBytes(n int64) bool {
 	if MaxAlloc <= 0 {
 		return false
 	}
-	env.alloc += allocSize(v)
+	env.alloc += n
 	return env.alloc > MaxAlloc
+}
+
+// charge adds v's size to the running total and reports whether the limit
+// has now been exceeded.
+func (env *env) charge(v any) bool {
+	return env.chargeBytes(allocSize(v))
 }
 
 // arrayTooLarge reports whether a []any of n elements would exceed MaxAlloc.

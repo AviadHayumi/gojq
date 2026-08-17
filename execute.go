@@ -83,7 +83,7 @@ loop:
 		case opappend:
 			i := env.index(code.v.([2]int))
 			x := env.pop()
-			if env.charge(x) {
+			if env.chargeBytes(16 + allocSize(x)) {
 				err = &allocLimitError{}
 				break loop
 			}

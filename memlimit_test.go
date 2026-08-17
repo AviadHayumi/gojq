@@ -140,3 +140,34 @@ func TestMaxAllocStopsRecursionAndBigint(t *testing.T) {
 		}
 	}
 }
+
+
+// a value in a []any slot costs 16 bytes for the slot plus its own footprint,
+// so an array of a million one-character strings is ~33 MB, not the ~1 MB its
+// contents suggest. before charging the slot, such an array grew far past the
+// limit (and `add` then churned 150+ MB the meter never saw). it must now error.
+func TestMaxAllocCountsArraySlots(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`[range(1000000) | tostring]`,       // a million tiny strings
+		`[range(1000000) | tostring] | add`, // ... then concatenated
+		`[range(1000000)]`,                   // a million boxed numbers
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		v, ok := code.Run(nil).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isErr := v.(error); !isErr {
+			t.Errorf("%q: expected an allocation error, got a value", src)
+		}
+	}
+}
