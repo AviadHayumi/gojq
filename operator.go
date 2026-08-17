@@ -371,6 +371,9 @@ func funcOpSub(_, l, r any) any {
 		func(l, r *big.Int) any { return new(big.Int).Sub(l, r) },
 		func(l, r string) any { return &binopTypeError{"subtract", l, r} },
 		func(l, r []any) any {
+			if arrayTooLarge(len(l)) {
+				return &allocLimitError{}
+			}
 			v := make([]any, 0, len(l))
 		L:
 			for _, l := range l {

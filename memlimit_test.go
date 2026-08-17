@@ -649,3 +649,28 @@ func TestMaxAllocBoundsMerge(t *testing.T) {
 		}
 	}
 }
+
+
+// array subtraction (. - r) pre-allocates a result with cap len(l); on a big
+// input array that upfront allocation must be bounded.
+func TestMaxAllocBoundsSubtract(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := make([]any, 2000000)
+	for i := range big {
+		big[i] = float64(i)
+	}
+	query, _ := Parse(`. - [1]`)
+	code, _ := Compile(query)
+	if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("array subtract on a big input: expected an allocation error, got a value")
+	}
+
+	// small subtraction still correct.
+	q, _ := Parse(`. - [2, 3]`)
+	c, _ := Compile(q)
+	if v, ok := c.Run([]any{1.0, 2.0, 3.0, 4.0}).Next(); !ok || fmt.Sprint(v) != "[1 4]" {
+		t.Errorf("subtract: expected [1 4], got %v", v)
+	}
+}
