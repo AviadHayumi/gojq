@@ -605,6 +605,20 @@ func funcInside(v, x any) any {
 	return funcContains(x, v)
 }
 
+// matchAt reports whether xs equals the len(xs)-run of vs starting at i. It
+// compares element by element rather than reslicing vs on every position, which
+// boxed a fresh slice header into Compare each step and turned indices / index /
+// rindex over a large array into a big transient allocation ( tens of MB for one
+// match ). Elements are already interface values, so this allocates nothing.
+func matchAt(vs, xs []any, i int) bool {
+	for j := range xs {
+		if Compare(vs[i+j], xs[j]) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func funcIndices(v, x any) any {
 	return indexFunc("indices", v, x, indices)
 }
@@ -615,7 +629,7 @@ func indices(vs, xs []any) any {
 		return rs
 	}
 	for i := range len(vs) - len(xs) + 1 {
-		if Compare(vs[i:i+len(xs)], xs) == 0 {
+		if matchAt(vs, xs, i) {
 			rs = append(rs, i)
 			if arrayTooLarge(len(rs)) {
 				return &allocLimitError{}
@@ -631,7 +645,7 @@ func funcIndex(v, x any) any {
 			return nil
 		}
 		for i := range len(vs) - len(xs) + 1 {
-			if Compare(vs[i:i+len(xs)], xs) == 0 {
+			if matchAt(vs, xs, i) {
 				return i
 			}
 		}
@@ -645,7 +659,7 @@ func funcRindex(v, x any) any {
 			return nil
 		}
 		for i := len(vs) - len(xs); i >= 0; i-- {
-			if Compare(vs[i:i+len(xs)], xs) == 0 {
+			if matchAt(vs, xs, i) {
 				return i
 			}
 		}

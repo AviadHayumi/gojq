@@ -914,6 +914,46 @@ func TestMaxAllocBoundsStrftime(t *testing.T) {
 	}
 }
 
+// indices / index / rindex compared xs against vs[i:i+len(xs)] on every position,
+// which boxed a fresh slice header into Compare each step. Over a large array that
+// was tens of MB of transient garbage for even a single match ( indices(5) on a 2M
+// array peaked at 52 MB and scaled with input ), all invisible to the meter since
+// the result is tiny. matchAt now compares element by element ( no reslice, no box ).
+func TestMaxAllocBoundsIndices(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// many matches still hit the result cap.
+	big := make([]any, 2000000)
+	for i := range big {
+		big[i] = float64(1)
+	}
+	query, _ := Parse(`indices(1)`)
+	code, _ := Compile(query)
+	if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("indices with 2M matches: expected an allocation error, got a value")
+	}
+
+	// the element-wise comparison preserves exact results.
+	for _, tc := range []struct {
+		src  string
+		in   any
+		want string
+	}{
+		{`indices(2)`, []any{1.0, 2.0, 3.0, 2.0, 2.0}, `[1,3,4]`},
+		{`index(2)`, []any{1.0, 2.0, 3.0}, `1`},
+		{`rindex(2)`, []any{1.0, 2.0, 3.0, 2.0}, `3`},
+		{`indices([1, 2])`, []any{0.0, 1.0, 2.0, 1.0, 2.0}, `[1,3]`},
+		{`indices("a")`, "banana", `[1,3,5]`},
+	} {
+		q, _ := Parse(tc.src + " | tojson")
+		c, _ := Compile(q)
+		if v, ok := c.Run(tc.in).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%s: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.
