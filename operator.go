@@ -439,6 +439,9 @@ func repeatString(s string, n float64) any {
 	if uint64(len(s))*uint64(c) >= math.MaxInt32 {
 		return &repeatStringTooLargeError{s, n}
 	}
+	if MaxAlloc > 0 && int64(len(s))*int64(c) > MaxAlloc {
+		return &repeatStringTooLargeError{s, n}
+	}
 	return strings.Repeat(s, c)
 }
 

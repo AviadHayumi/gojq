@@ -1652,6 +1652,9 @@ func updateArrayIndex(v []any, i int, path []any, n any, a allocator) (any, erro
 		if i >= 0x20000000 {
 			return nil, &arrayIndexTooLargeError{i}
 		}
+		if MaxAlloc > 0 && int64(i+1)*16 > MaxAlloc {
+			return nil, &arrayIndexTooLargeError{i}
+		}
 	}
 	u, err := update(x, path, n, a)
 	if err != nil {

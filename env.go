@@ -17,6 +17,7 @@ type env struct {
 	label     int
 	args      [32]any // len(env.args) > maxarity
 	ctx       context.Context
+	alloc     int64
 }
 
 func newEnv(ctx context.Context) *env {

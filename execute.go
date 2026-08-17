@@ -72,9 +72,18 @@ loop:
 				}
 			}
 			env.push(m)
+			if env.charge(m) {
+				err = &allocLimitError{}
+				break loop
+			}
 		case opappend:
 			i := env.index(code.v.([2]int))
-			env.values[i] = append(env.values[i].([]any), env.pop())
+			x := env.pop()
+			if env.charge(x) {
+				err = &allocLimitError{}
+				break loop
+			}
+			env.values[i] = append(env.values[i].([]any), x)
 		case opfork:
 			if backtrack {
 				if err != nil {
@@ -188,6 +197,10 @@ loop:
 					break loop
 				}
 				env.push(w)
+				if env.charge(w) {
+					err = &allocLimitError{}
+					break loop
+				}
 				if !env.paths.empty() && env.expdepth == 0 {
 					switch v[2].(string) {
 					case "_index":
