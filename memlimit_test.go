@@ -171,3 +171,29 @@ func TestMaxAllocCountsArraySlots(t *testing.T) {
 		}
 	}
 }
+
+
+// fromjson builds a whole structure from one json.Decode; a 2 MB array string
+// of a million ones would materialize ~16 MB before the value meter saw it.
+// the charging streaming decoder must stop it during the parse.
+func TestMaxAllocStopsFromJSON(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	src := "[" + strings.Repeat("1,", 999999) + "1]"
+	query, err := Parse(`fromjson`)
+	if err != nil {
+		t.Fatalf("Parse: %s", err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile: %s", err)
+	}
+	v, ok := code.Run(src).Next()
+	if !ok {
+		t.Fatal("expected an error, got no result")
+	}
+	if _, isAlloc := v.(*allocLimitError); !isAlloc {
+		t.Errorf("expected *allocLimitError, got %v", v)
+	}
+}

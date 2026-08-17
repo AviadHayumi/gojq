@@ -1,6 +1,9 @@
 package gojq
 
-import "math/big"
+import (
+	"encoding/json"
+	"math/big"
+)
 
 // MaxAlloc bounds the total number of bytes a single query execution may
 // allocate for its values. Zero, the default, disables the limit and keeps
@@ -62,4 +65,66 @@ func (env *env) overStackLimit() bool {
 		int64(len(env.paths.data))*24+
 		int64(len(env.scopes.data))*48+
 		int64(len(env.forks))*72 > MaxAlloc
+}
+
+
+// decodeJSONLimited decodes one JSON value from dec, tracking the cumulative
+// shallow size of the structure it builds and erroring once that size passes
+// MaxAlloc. It mirrors json.Decoder.Decode under UseNumber, so a huge document
+// cannot be materialized in one shot before the value meter would see it.
+// Sizes match allocSize: 16 bytes per array slot, 40 per object entry (24 map
+// bucket + a 16-byte string header for the key), plus each value's own footprint.
+func decodeJSONLimited(dec *json.Decoder, size *int64) (any, error) {
+	t, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch t := t.(type) {
+	case json.Delim:
+		switch t {
+		case '[':
+			arr := []any{}
+			for dec.More() {
+				if *size += 16; *size > MaxAlloc {
+					return nil, &allocLimitError{}
+				}
+				v, err := decodeJSONLimited(dec, size)
+				if err != nil {
+					return nil, err
+				}
+				arr = append(arr, v)
+			}
+			_, err := dec.Token() // consume ]
+			return arr, err
+		case '{':
+			obj := map[string]any{}
+			for dec.More() {
+				key, err := dec.Token()
+				if err != nil {
+					return nil, err
+				}
+				k := key.(string)
+				if *size += int64(len(k)) + 40; *size > MaxAlloc {
+					return nil, &allocLimitError{}
+				}
+				v, err := decodeJSONLimited(dec, size)
+				if err != nil {
+					return nil, err
+				}
+				obj[k] = v
+			}
+			_, err := dec.Token() // consume }
+			return obj, err
+		default:
+			return nil, &json.SyntaxError{}
+		}
+	case string:
+		*size += int64(len(t)) + 16
+	default: // json.Number, bool, nil
+		*size += 16
+	}
+	if *size > MaxAlloc {
+		return nil, &allocLimitError{}
+	}
+	return t, nil
 }

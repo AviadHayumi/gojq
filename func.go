@@ -852,7 +852,16 @@ func funcFromJSON(v any) any {
 	var w any
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.UseNumber()
-	if err := dec.Decode(&w); err != nil {
+	if MaxAlloc > 0 {
+		var size int64
+		var err error
+		if w, err = decodeJSONLimited(dec, &size); err != nil {
+			if _, ok := err.(*allocLimitError); ok {
+				return err
+			}
+			return &func0WrapError{"fromjson", v, err}
+		}
+	} else if err := dec.Decode(&w); err != nil {
 		return &func0WrapError{"fromjson", v, err}
 	}
 	if _, err := dec.Token(); err != io.EOF {
