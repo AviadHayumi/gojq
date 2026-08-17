@@ -1137,6 +1137,47 @@ func TestMaxAllocBoundsEncodeDepth(t *testing.T) {
 	}
 }
 
+// Several value operations recurse in Go on the structure's nesting depth -
+// Compare ( sort / unique / min / < / == / group_by ), contains / inside, and
+// flatten - none covered by the interpreter's overStackLimit. A deeply nested
+// value overflowed the goroutine stack ( a fatal crash, not a panic ). Depth
+// bounds now make them error ; Next recovers the Compare / contains panic.
+func TestMaxAllocBoundsDeepRecursion(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	var deep any = 0.0
+	for i := 0; i < 500000; i++ {
+		deep = []any{deep}
+	}
+	for _, src := range []string{
+		`[., .] | sort`, `[., .] | unique`, `[., .] | group_by(.)`, `[., .] | min`,
+		`. < .`, `. == .`, `contains(.)`, `inside(.)`, `flatten`,
+	} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(deep).Next(); !ok {
+			t.Errorf("%q on a deep value: expected an error, got no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q on a deep value: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// normal nesting still compares and flattens correctly.
+	for _, tc := range []struct{ src, want string }{
+		{`[[3], [1], [2]] | sort | tojson`, `[[1],[2],[3]]`},
+		{`[[1, [2, [3]]]] | flatten | tojson`, `[1,2,3]`},
+		{`{"a": {"b": 1}} | contains({"a": {"b": 1}})`, `true`},
+		{`([1] < [2])`, `true`},
+	} {
+		q, _ := Parse(tc.src)
+		c, _ := Compile(q)
+		if v, ok := c.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

@@ -563,6 +563,16 @@ func funcReverse(v any) any {
 }
 
 func funcContains(v, x any) any {
+	return containsDepth(v, x, 0)
+}
+
+// containsDepth is funcContains with a recursion-depth bound; contains/inside
+// recurse on nested arrays and objects, so a deeply nested value would overflow
+// the goroutine stack. Past the depth a value already exceeds the limit.
+func containsDepth(v, x any, depth int) any {
+	if MaxAlloc > 0 && int64(depth)*16 > MaxAlloc {
+		panic(&allocLimitError{})
+	}
 	return binopTypeSwitch(v, x,
 		func(l, r int) any { return l == r },
 		func(l, r float64) any { return l == r },
@@ -572,7 +582,7 @@ func funcContains(v, x any) any {
 		R:
 			for _, r := range r {
 				for _, l := range l {
-					if funcContains(l, r) == true {
+					if containsDepth(l, r, depth+1) == true {
 						continue R
 					}
 				}
@@ -585,7 +595,7 @@ func funcContains(v, x any) any {
 				return false
 			}
 			for k, r := range r {
-				if l, ok := l[k]; !ok || funcContains(l, r) != true {
+				if l, ok := l[k]; !ok || containsDepth(l, r, depth+1) != true {
 					return false
 				}
 			}
@@ -1321,13 +1331,18 @@ func funcFlatten(v any, args []any) (r any) {
 			return &flattenDepthError{depth}
 		}
 	}
-	return flatten([]any{}, vs, depth)
+	return flatten([]any{}, vs, depth, 0)
 }
 
-func flatten(xs, vs []any, depth float64) []any {
+func flatten(xs, vs []any, depth float64, rec int) []any {
+	// bound the Go recursion depth so a deeply nested array cannot overflow the
+	// goroutine stack; a value this deep already exceeds the limit.
+	if MaxAlloc > 0 && int64(rec)*16 > MaxAlloc {
+		panic(&allocLimitError{})
+	}
 	for _, v := range vs {
 		if vs, ok := v.([]any); ok && depth != 0 {
-			xs = flatten(xs, vs, depth-1)
+			xs = flatten(xs, vs, depth-1, rec+1)
 		} else {
 			xs = append(xs, v)
 			if arrayTooLarge(len(xs)) {

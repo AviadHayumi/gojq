@@ -19,11 +19,24 @@ func (env *env) execute(bc *Code, v any, vars ...any) Iter {
 	return env
 }
 
-func (env *env) Next() (any, bool) {
+func (env *env) Next() (v any, ok bool) {
 	var err error
 	pc, callpc, index := env.pc, len(env.codes)-1, -1
 	backtrack, hasCtx := env.backtrack, env.ctx != context.Background()
-	defer func() { env.pc, env.backtrack = pc, true }()
+	defer func() {
+		env.pc, env.backtrack = pc, true
+		// A few value operations recurse in Go outside the opcode loop and panic
+		// with *allocLimitError when they get too deep or too large (Compare over a
+		// deeply nested value, for one). Recover it here so it surfaces as an error
+		// instead of escaping the run; anything else re-panics.
+		if r := recover(); r != nil {
+			if _, isAlloc := r.(*allocLimitError); !isAlloc {
+				panic(r)
+			}
+			pc, env.forks = len(env.codes), nil
+			v, ok = &allocLimitError{}, true
+		}
+	}()
 loop:
 	for ; pc < len(env.codes); pc++ {
 		env.debugState(pc, backtrack)
