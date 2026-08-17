@@ -765,6 +765,55 @@ func TestMaxAllocBoundsFormatFieldEscaping(t *testing.T) {
 	}
 }
 
+// @html / @uri / @base64 each built the whole escaped or encoded output in one
+// pass ( htmlEscaper.Replace up to 6x for ' -> &apos; , url.QueryEscape up to 3x,
+// base64 4/3x ) with no in-loop bound, so a big input scaled the peak linearly
+// ( @html on 40 MB reached ~460 MB ) under a 4 MB limit. @html/@uri now escape in
+// chunks ( boundedReplace ) ; @base64 pre-checks its deterministic encoded length.
+func TestMaxAllocBoundsFormatEscapers(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, tc := range []struct {
+		src string
+		in  string
+	}{
+		{`@html`, strings.Repeat("'", 3<<20)},             // ' -> &apos; (6x)
+		{`@uri`, strings.Repeat(string(rune(34)), 3<<20)}, // " -> %22 (3x)
+		{`@base64`, strings.Repeat("A", 4<<20)},           // 4/3x, over the limit
+	} {
+		query, _ := Parse(tc.src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(tc.in).Next(); !ok {
+			t.Errorf("%s: expected an error, got no result", tc.src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%s on a huge input: expected an allocation error, got %v", tc.src, v)
+		}
+	}
+
+	// benign inputs still produce the exact escaping/encoding.
+	for _, tc := range []struct{ src, in, want string }{
+		{`@html`, "a<b>&'x", "a&lt;b&gt;&amp;&apos;x"},
+		{`@uri`, "a b/c", "a%20b%2Fc"},
+		{`@base64`, "hello", "aGVsbG8="},
+	} {
+		query, _ := Parse(tc.src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(tc.in).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%s: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+
+	// a clean large field does not expand, so it must still format ( no false positive ).
+	q, _ := Parse(`@html`)
+	code, _ := Compile(q)
+	if v, ok := code.Run(strings.Repeat("x", 3<<20)).Next(); !ok {
+		t.Errorf("clean @html: expected a result")
+	} else if _, isAlloc := v.(*allocLimitError); isAlloc {
+		t.Errorf("clean 3 MB @html should format, got alloc error")
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

@@ -941,7 +941,11 @@ var htmlEscaper = strings.NewReplacer(
 func funcToHTML(v any) any {
 	switch x := funcToString(v).(type) {
 	case string:
-		return htmlEscaper.Replace(x)
+		s, ok := boundedReplace(htmlEscaper.Replace, x)
+		if !ok {
+			return &allocLimitError{}
+		}
+		return s
 	default:
 		return x
 	}
@@ -950,7 +954,13 @@ func funcToHTML(v any) any {
 func funcToURI(v any) any {
 	switch x := funcToString(v).(type) {
 	case string:
-		return strings.ReplaceAll(url.QueryEscape(x), "+", "%20")
+		s, ok := boundedReplace(func(s string) string {
+			return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+		}, x)
+		if !ok {
+			return &allocLimitError{}
+		}
+		return s
 	default:
 		return x
 	}
@@ -1069,6 +1079,9 @@ func boundedReplace(escape func(string) string, s string) (string, bool) {
 func funcToBase64(v any) any {
 	switch x := funcToString(v).(type) {
 	case string:
+		if MaxAlloc > 0 && int64(base64.StdEncoding.EncodedLen(len(x))) > MaxAlloc {
+			return &allocLimitError{}
+		}
 		return base64.StdEncoding.EncodeToString([]byte(x))
 	default:
 		return x
