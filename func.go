@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -1999,7 +2000,7 @@ func funcNow(any) any {
 	return timeToEpoch(time.Now())
 }
 
-func funcMatch(v, re, fs, testing any, cache *sync.Map) any {
+func funcMatch(v, re, fs, testing any, cache *reCache) any {
 	var name string
 	if testing == true {
 		name = "test"
@@ -2070,9 +2071,18 @@ func funcMatch(v, re, fs, testing any, cache *sync.Map) any {
 	return res
 }
 
-func compileRegexp(re, flags string, cache *sync.Map) (*regexp.Regexp, error) {
+// reCache holds compiled regexps and tracks their approximate retained bytes,
+// so a run that generates millions of distinct patterns cannot grow the cache
+// without bound. When MaxAlloc is set and the cache is full, new patterns are
+// still compiled and returned, just not retained.
+type reCache struct {
+	m     sync.Map
+	bytes atomic.Int64
+}
+
+func compileRegexp(re, flags string, cache *reCache) (*regexp.Regexp, error) {
 	key := [2]string{re, flags}
-	if r, ok := cache.Load(key); ok {
+	if r, ok := cache.m.Load(key); ok {
 		return r.(*regexp.Regexp), nil
 	}
 	if strings.IndexFunc(flags, func(r rune) bool {
@@ -2090,7 +2100,11 @@ func compileRegexp(re, flags string, cache *sync.Map) (*regexp.Regexp, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid regular expression %q: %s", re, err)
 	}
-	cache.Store(key, r)
+	if MaxAlloc <= 0 || cache.bytes.Load() < MaxAlloc {
+		if _, loaded := cache.m.LoadOrStore(key, r); !loaded {
+			cache.bytes.Add(int64(len(re))*128 + 1024)
+		}
+	}
 	return r, nil
 }
 

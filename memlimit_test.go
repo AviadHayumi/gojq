@@ -231,3 +231,27 @@ func TestMaxAllocStopsValueSlotGrowth(t *testing.T) {
 		}
 	}
 }
+
+
+// compileRegexp caches every distinct pattern; a run generating millions of
+// them once grew the cache to 70-95 MB (and it persisted after the run). the
+// cache must stop retaining once it reaches MaxAlloc, while patterns still work.
+func TestRegexpCacheBounded(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 1 << 20 // 1 MiB
+
+	var cache reCache
+	for i := 0; i < 50000; i++ {
+		if _, err := compileRegexp(fmt.Sprintf("distinct-pattern-%d", i), "", &cache); err != nil {
+			t.Fatalf("compile %d: %s", i, err)
+		}
+	}
+	if got := cache.bytes.Load(); got > MaxAlloc+4096 {
+		t.Errorf("cache retained %d bytes for 50000 patterns, want bounded near MaxAlloc (%d)", got, int64(MaxAlloc))
+	}
+	// still correct after the cache filled: a pattern compiles and matches.
+	r, err := compileRegexp("^abc$", "", &cache)
+	if err != nil || !r.MatchString("abc") || r.MatchString("xyz") {
+		t.Errorf("regex broken after cache filled: r=%v err=%v", r, err)
+	}
+}
