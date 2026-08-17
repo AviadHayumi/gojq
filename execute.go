@@ -293,6 +293,10 @@ loop:
 				if len(v) == 0 {
 					break loop
 				}
+				if MaxAlloc > 0 && int64(len(v))*32 > MaxAlloc {
+					err = &allocLimitError{}
+					break loop
+				}
 				xs = make([]pathValue, len(v))
 				for i, v := range v {
 					xs[i] = pathValue{path: i, value: v}
@@ -303,6 +307,10 @@ loop:
 					break loop
 				}
 				if len(v) == 0 {
+					break loop
+				}
+				if MaxAlloc > 0 && int64(len(v))*32 > MaxAlloc {
+					err = &allocLimitError{}
 					break loop
 				}
 				xs = make([]pathValue, len(v))

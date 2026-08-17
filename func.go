@@ -1886,6 +1886,9 @@ func funcTranspose(v any) any {
 			l = k
 		}
 	}
+	if MaxAlloc > 0 && int64(l)*int64(len(vss))*16 > MaxAlloc {
+		return &allocLimitError{}
+	}
 	wss := make([][]any, l)
 	xs := make([]any, l)
 	for i, k := 0, len(vss); i < l; i++ {

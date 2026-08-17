@@ -545,3 +545,58 @@ func TestMaxAllocBoundsFlattenKeys(t *testing.T) {
 		t.Errorf("flatten: expected [1 2 3], got %v", v)
 	}
 }
+
+
+// .[] (opiter) builds a []pathValue of the input length to iterate, unmetered,
+// so `.[] | select(false)` on a big map completed blind at 167 MB. transpose
+// makes input-sized arrays. both must be bounded, iteration still correct.
+func TestMaxAllocBoundsIterTranspose(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	bigMap := map[string]any{}
+	for i := 0; i < 300000; i++ {
+		bigMap[fmt.Sprintf("k%d", i)] = float64(i)
+	}
+	bigArr := make([]any, 300000)
+	for i := range bigArr {
+		bigArr[i] = float64(i)
+	}
+	row := func() []any {
+		r := make([]any, 300000)
+		for j := range r {
+			r[j] = float64(j)
+		}
+		return r
+	}
+	matrix := []any{row(), row()}
+	for _, c := range []struct {
+		src string
+		in  any
+	}{
+		{`.[] | select(false)`, bigMap}, // was 167 MB, meter blind
+		{`.[] | select(false)`, bigArr},
+		{`transpose`, matrix},
+	} {
+		query, _ := Parse(c.src)
+		code, _ := Compile(query)
+		v, ok := code.Run(c.in).Next()
+		if !ok {
+			t.Errorf("%q on a large input: expected an error, completed with no result", c.src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q on a large input: expected an allocation error, got %v", c.src, v)
+		}
+	}
+
+	// small iteration and transpose still correct.
+	q, _ := Parse(`[.[]]`)
+	code, _ := Compile(q)
+	if v, ok := code.Run(map[string]any{"b": 2.0, "a": 1.0}).Next(); !ok || fmt.Sprint(v) != "[1 2]" {
+		t.Errorf("[.[]] on object: expected [1 2], got %v", v)
+	}
+	q2, _ := Parse(`transpose`)
+	c2, _ := Compile(q2)
+	if v, ok := c2.Run([]any{[]any{1.0, 2.0}, []any{3.0, 4.0}}).Next(); !ok || fmt.Sprint(v) != "[[1 3] [2 4]]" {
+		t.Errorf("transpose: expected [[1 3] [2 4]], got %v", v)
+	}
+}
