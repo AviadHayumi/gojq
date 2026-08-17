@@ -103,3 +103,40 @@ func TestMaxAllocStopsSingleShotBuiltins(t *testing.T) {
 		}
 	}
 }
+
+
+// deep or infinite recursion grows the interpreter's own stacks (operands,
+// forks, scopes) without ever completing a value, so the value meter never
+// charges it. and a big.Int can grow past the value meter because its size is
+// not the size of the interface that holds it. both must error under MaxAlloc.
+func TestMaxAllocStopsRecursionAndBigint(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	squareChain := "."
+	for i := 0; i < 30; i++ {
+		squareChain += " | (. * .)"
+	}
+	for _, c := range []struct {
+		src string
+		in  any
+	}{
+		{`def f: [f]; f`, nil}, // infinite nesting recursion
+		{squareChain, 3},       // big.Int doubling by repeated squaring
+	} {
+		query, err := Parse(c.src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", c.src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", c.src, err)
+		}
+		v, ok := code.Run(c.in).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", c.src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q: expected *allocLimitError, got %v", c.src, v)
+		}
+	}
+}

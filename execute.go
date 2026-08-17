@@ -36,6 +36,10 @@ loop:
 			default:
 			}
 		}
+		if MaxAlloc > 0 && env.overStackLimit() {
+			pc, env.forks = len(env.codes), nil
+			return &allocLimitError{}, true
+		}
 		switch code.op {
 		case opnop:
 			// nop

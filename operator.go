@@ -395,7 +395,12 @@ func funcOpMul(_, l, r any) any {
 			return x.Mul(x, y)
 		},
 		func(l, r float64) any { return l * r },
-		func(l, r *big.Int) any { return new(big.Int).Mul(l, r) },
+		func(l, r *big.Int) any {
+			if MaxAlloc > 0 && int64(l.BitLen()+r.BitLen())/8 > MaxAlloc {
+				return &allocLimitError{}
+			}
+			return new(big.Int).Mul(l, r)
+		},
 		func(l, r string) any { return &binopTypeError{"multiply", l, r} },
 		func(l, r []any) any { return &binopTypeError{"multiply", l, r} },
 		deepMergeObjects,
