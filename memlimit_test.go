@@ -734,3 +734,28 @@ func TestMaxAllocBoundsValues(t *testing.T) {
 		t.Errorf("add on a string should be a type error, not an alloc error")
 	}
 }
+
+
+// encodeObject makes a []keyVal of the map's size to sort keys, at object entry -
+// before the encoder's output-length check (round 22) - so tojson/tostring/@json
+// of a big map spiked on it. must error, small objects still encode sorted.
+func TestMaxAllocBoundsEncodeObject(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := map[string]any{}
+	for i := 0; i < 1000000; i++ {
+		big[fmt.Sprint(i)] = float64(i)
+	}
+	query, _ := Parse(`tojson`)
+	code, _ := Compile(query)
+	if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("tojson of a big map: expected an allocation error, got a value")
+	}
+
+	q, _ := Parse(`tojson`)
+	c, _ := Compile(q)
+	if v, ok := c.Run(map[string]any{"b": 2.0, "a": 1.0}).Next(); !ok || fmt.Sprint(v) != `{"a":1,"b":2}` {
+		t.Errorf("tojson small object: got %v", v)
+	}
+}

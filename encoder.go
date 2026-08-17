@@ -204,6 +204,9 @@ func (e *encoder) encodeObject(vs map[string]any) {
 		key string
 		val any
 	}
+	if MaxAlloc > 0 && int64(len(vs))*32 > MaxAlloc {
+		panic(&allocLimitError{})
+	}
 	kvs := make([]keyVal, len(vs))
 	var i int
 	for k, v := range vs {
