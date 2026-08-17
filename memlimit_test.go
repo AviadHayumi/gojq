@@ -784,3 +784,29 @@ func TestMaxAllocBoundsSliceAssign(t *testing.T) {
 		t.Errorf("slice assign: got %v", v)
 	}
 }
+
+
+// setpath/modify/del on a map copy it via a.makeObject(len(v)+1); on a big map
+// that copy is unbounded. must error (message-matched - setpath wraps it).
+func TestMaxAllocBoundsObjectUpdate(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := map[string]any{}
+	for i := 0; i < 1000000; i++ {
+		big[fmt.Sprint(i)] = float64(i)
+	}
+	for _, src := range []string{`.new = 1`, `del(.["500000"])`} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, _ := code.Run(big).Next(); !strings.Contains(fmt.Sprint(v), "allocation exceeds") {
+			t.Errorf("%s on a big map: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	q, _ := Parse(`.c = 3`)
+	c, _ := Compile(q)
+	if v, ok := c.Run(map[string]any{"a": 1.0, "b": 2.0}).Next(); !ok || fmt.Sprint(v) != "map[a:1 b:2 c:3]" {
+		t.Errorf(".c=3: got %v", v)
+	}
+}

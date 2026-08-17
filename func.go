@@ -1714,6 +1714,9 @@ func updateObject(v map[string]any, k string, path []any, n any, a allocator) (a
 		v[k] = u
 		return v, nil
 	}
+	if MaxAlloc > 0 && int64(len(v)+1)*24 > MaxAlloc {
+		return nil, &allocLimitError{}
+	}
 	w := a.makeObject(len(v) + 1)
 	maps.Copy(w, v)
 	w[k] = u
