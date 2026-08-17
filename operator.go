@@ -323,6 +323,9 @@ func funcOpAdd(_, l, r any) any {
 			if len(r) == 0 {
 				return l
 			}
+			if arrayTooLarge(len(l) + len(r)) {
+				return &allocLimitError{}
+			}
 			v := make([]any, len(l)+len(r))
 			copy(v, l)
 			copy(v[len(l):], r)
@@ -334,6 +337,9 @@ func funcOpAdd(_, l, r any) any {
 			}
 			if len(r) == 0 {
 				return l
+			}
+			if MaxAlloc > 0 && int64(len(l)+len(r))*24 > MaxAlloc {
+				return &allocLimitError{}
 			}
 			m := make(map[string]any, len(l)+len(r))
 			maps.Copy(m, l)
@@ -421,13 +427,25 @@ func funcOpMul(_, l, r any) any {
 }
 
 func deepMergeObjects(l, r map[string]any) any {
+	var size int64
+	return deepMergeObjectsLimited(l, r, &size)
+}
+
+func deepMergeObjectsLimited(l, r map[string]any, size *int64) any {
+	if *size += int64(len(l)+len(r)) * 24; MaxAlloc > 0 && *size > MaxAlloc {
+		return &allocLimitError{}
+	}
 	m := make(map[string]any, len(l)+len(r))
 	maps.Copy(m, l)
 	for k, v := range r {
 		if mk, ok := m[k]; ok {
 			if mk, ok := mk.(map[string]any); ok {
 				if w, ok := v.(map[string]any); ok {
-					v = deepMergeObjects(mk, w)
+					merged := deepMergeObjectsLimited(mk, w, size)
+					if _, ok := merged.(*allocLimitError); ok {
+						return merged
+					}
+					v = merged
 				}
 			}
 		}

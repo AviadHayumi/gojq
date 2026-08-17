@@ -600,3 +600,52 @@ func TestMaxAllocBoundsIterTranspose(t *testing.T) {
 		t.Errorf("transpose: expected [[1 3] [2 4]], got %v", v)
 	}
 }
+
+
+// object/array merge operators (. + . shallow, . * . deep) build the merged
+// result internally before the opcall charges it; on a big input object they hit
+// 160 MB. the flat makes and deepMergeObjects (recursive) must be bounded.
+func TestMaxAllocBoundsMerge(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := map[string]any{}
+	for i := 0; i < 1000000; i++ {
+		big[fmt.Sprint(i)] = float64(i)
+	}
+	deep := any(map[string]any{"v": 0.0})
+	for i := 0; i < 300000; i++ {
+		deep = map[string]any{"a": deep}
+	}
+	for _, c := range []struct {
+		src string
+		in  any
+	}{
+		{`. + .`, big},           // shallow object merge
+		{`. * .`, big},           // deep object merge, wide
+		{`. * {"new": 1}`, big},  // deep merge copies the big object
+		{`. * .`, deep},          // deep merge, deep
+	} {
+		query, _ := Parse(c.src)
+		code, _ := Compile(query)
+		if v, _ := code.Run(c.in).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+			t.Errorf("%q on a big object: expected an allocation error, got a value", c.src)
+		}
+	}
+
+	// small merges still correct.
+	for _, c := range []struct{ src, in, want string }{
+		{`. + {"b": 2}`, `{"a": 1}`, "map[a:1 b:2]"},
+		{`. * {"a": {"y": 2}}`, `{"a": {"x": 1}}`, "map[a:map[x:1 y:2]]"},
+	} {
+		q, _ := Parse(c.src)
+		code, _ := Compile(q)
+		var iv any
+		jq, _ := Parse(c.in)
+		jc, _ := Compile(jq)
+		iv, _ = jc.Run(nil).Next()
+		if v, ok := code.Run(iv).Next(); !ok || fmt.Sprint(v) != c.want {
+			t.Errorf("%q: expected %s, got %v", c.src, c.want, v)
+		}
+	}
+}
