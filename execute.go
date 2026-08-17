@@ -229,6 +229,11 @@ loop:
 						// collecting many decodes of a deeply-nested string
 						// allocates unbounded.
 						n = deepSize(w)
+					case "transpose":
+						// transpose builds fresh inner arrays the shallow meter
+						// cannot see; charge their slots, else an N-by-2
+						// transpose collected in a loop allocates unbounded.
+						n = transposeResultSize(w)
 					}
 				}
 				if env.chargeBytes(n) {

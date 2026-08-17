@@ -1630,3 +1630,38 @@ func TestMaxAllocBoundsFromjsonCollection(t *testing.T) {
 		t.Errorf("ordinary fromjson: got %v", v2)
 	}
 }
+
+// transpose builds a fresh outer array of inner arrays whose elements are refs
+// into the input. The shallow meter charged only the outer array, so an N-by-2
+// transpose ( two wide inner arrays ) collected in a loop reached ~2.2 GB while
+// the meter saw ~48 bytes per result. transposeResultSize now charges the inner
+// arrays' slots. ( Round 120 missed this: it tested the 2-by-N orientation,
+// which is many NARROW inner arrays and stays bounded. )
+func TestMaxAllocBoundsTransposeCollection(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// N-by-2 input transposes to two N-wide inner arrays; collecting a million
+	// of them must error instead of building GB.
+	src := `([range(2000)] | map([., .])) as $m | [range(1000000) | ($m | transpose)] | length`
+	query, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := code.Run(nil).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected an allocation error collecting wide transposes, got %v", v)
+	}
+
+	// an ordinary transpose still works.
+	q2, _ := Parse(`[[1, 2, 3], [4, 5, 6]] | transpose`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(nil).Next(); !ok || fmt.Sprint(v2) != "[[1 4] [2 5] [3 6]]" {
+		t.Errorf("ordinary transpose: got %v", v2)
+	}
+}

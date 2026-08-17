@@ -99,6 +99,24 @@ func deepSize(v any) int64 {
 	return total
 }
 
+// transposeResultSize is the byte size of a transpose result: an outer array of
+// freshly-made inner arrays whose elements are references into the input. The
+// shallow meter charges only the outer array, so an N-by-2 transpose ( two wide
+// inner arrays ) collected in a loop allocated hundreds of MB while the meter
+// saw ~48 bytes each. This charges the inner arrays' slots too, but stops at the
+// elements ( they are refs, and recursing could revisit a shared sub-value ).
+func transposeResultSize(w any) int64 {
+	outer, ok := w.([]any)
+	if !ok {
+		return allocSize(w)
+	}
+	n := allocSize(outer)
+	for _, inner := range outer {
+		n += allocSize(inner)
+	}
+	return n
+}
+
 // chargeBytes adds n to the running total and reports whether the limit has
 // now been exceeded.
 func (env *env) chargeBytes(n int64) bool {
