@@ -759,3 +759,27 @@ func TestMaxAllocBoundsEncodeObject(t *testing.T) {
 		t.Errorf("tojson small object: got %v", v)
 	}
 }
+
+
+// slice assignment (.[a:b] = x) rebuilds the array via a.makeArray(~len(v));
+// on a big input array that make must be bounded. small slices still work.
+func TestMaxAllocBoundsSliceAssign(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := make([]any, 2000000)
+	for i := range big {
+		big[i] = float64(i)
+	}
+	query, _ := Parse(`.[0:1] = [9]`)
+	code, _ := Compile(query)
+	if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("slice assign on a big array: expected an allocation error, got a value")
+	}
+
+	q, _ := Parse(`.[1:3] = [9, 9]`)
+	c, _ := Compile(q)
+	if v, ok := c.Run([]any{0.0, 1.0, 2.0, 3.0, 4.0}).Next(); !ok || fmt.Sprint(v) != "[0 9 9 3 4]" {
+		t.Errorf("slice assign: got %v", v)
+	}
+}

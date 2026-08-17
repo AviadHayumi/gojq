@@ -1813,6 +1813,9 @@ func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator)
 		if len(u) == end-start && a.allocated(v) {
 			w = v
 		} else {
+			if arrayTooLarge(len(v) - (end - start) + len(u)) {
+				return nil, &allocLimitError{}
+			}
 			w = a.makeArray(len(v)-(end-start)+len(u), 0)
 			copy(w, v[:start])
 			copy(w[start+len(u):], v[end:])
@@ -1824,6 +1827,9 @@ func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator)
 		if a.allocated(v) {
 			w = v
 		} else {
+			if arrayTooLarge(len(v)) {
+				return nil, &allocLimitError{}
+			}
 			w = a.makeArray(len(v), 0)
 			copy(w, v)
 		}
