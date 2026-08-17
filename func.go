@@ -474,6 +474,9 @@ func add(xs iter.Seq[any]) any {
 		case map[string]any:
 			switch w := v.(type) {
 			case nil:
+				if MaxAlloc > 0 && int64(len(x))*24 > MaxAlloc {
+					return &allocLimitError{}
+				}
 				v = maps.Clone(x)
 				continue
 			case map[string]any:
