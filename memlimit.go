@@ -71,6 +71,34 @@ func matchResultSize(w any) int64 {
 	return n
 }
 
+// deepSize is the total byte size of a value including everything nested. It is
+// used to charge builtins that return a freshly decoded tree the shallow meter
+// cannot see ( fromjson ): decodeJSONLimited bounds a single decode, but the
+// result is otherwise charged only at its top level, so collecting many decodes
+// of a deeply-nested string allocated gigabytes while the meter saw almost
+// nothing. It walks iteratively so an arbitrarily deep result cannot overflow
+// the goroutine stack, and must only be called on trees ( no shared references,
+// which a JSON decode never produces ), else a shared node is counted per path.
+func deepSize(v any) int64 {
+	var total int64
+	stack := []any{v}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		total += allocSize(x)
+		switch x := x.(type) {
+		case []any:
+			stack = append(stack, x...)
+		case map[string]any:
+			for key, val := range x {
+				total += int64(len(key)) + 16 // key string copied into the object
+				stack = append(stack, val)
+			}
+		}
+	}
+	return total
+}
+
 // chargeBytes adds n to the running total and reports whether the limit has
 // now been exceeded.
 func (env *env) chargeBytes(n int64) bool {

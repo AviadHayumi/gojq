@@ -1596,3 +1596,37 @@ func TestMaxAllocBoundsMatchCaptures(t *testing.T) {
 		t.Errorf("ordinary match: got %v", v2)
 	}
 }
+
+// fromjson decodes a fresh nested tree. decodeJSONLimited bounds a single
+// decode, but the result was otherwise charged at its top level only, so a
+// query collecting many decodes of a deeply-nested JSON string ( a ~40 KB
+// string reached ~3.7 GB ) allocated unbounded while the meter saw ~16 bytes
+// per decode. deepSize now charges the whole decoded tree at the native result.
+func TestMaxAllocBoundsFromjsonCollection(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// a deeply-nested JSON string decoded a million times and collected: each
+	// decode is tiny at the top but large nested, so this must error.
+	src := `("[" * 20000 + "0" + "]" * 20000) as $j | [range(1000000) | ($j | fromjson)] | length`
+	query, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := code.Run(nil).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected an allocation error collecting deep fromjson, got %v", v)
+	}
+
+	// ordinary fromjson still works.
+	q2, _ := Parse(`"[1,2,3]" | fromjson | add`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(nil).Next(); !ok || fmt.Sprint(v2) != "6" {
+		t.Errorf("ordinary fromjson: got %v", v2)
+	}
+}

@@ -216,12 +216,19 @@ loop:
 				env.push(w)
 				n := allocSize(w)
 				if MaxAlloc > 0 {
-					if name, _ := v[2].(string); name == "_match" {
+					switch name, _ := v[2].(string); name {
+					case "_match":
 						// _match builds nested capture objects the shallow
 						// meter cannot see; charge their real size, else a
 						// query collecting many matches allocates unbounded
 						// while the meter charges almost nothing.
 						n = matchResultSize(w)
+					case "fromjson":
+						// fromjson decodes a fresh nested tree the shallow
+						// meter cannot see; charge the deep size, else a query
+						// collecting many decodes of a deeply-nested string
+						// allocates unbounded.
+						n = deepSize(w)
 					}
 				}
 				if env.chargeBytes(n) {
