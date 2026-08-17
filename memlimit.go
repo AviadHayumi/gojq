@@ -64,6 +64,7 @@ func (env *env) overStackLimit() bool {
 	return int64(len(env.stack.data))*24+
 		int64(len(env.paths.data))*24+
 		int64(len(env.scopes.data))*48+
+		int64(len(env.values))*16+
 		int64(len(env.forks))*72 > MaxAlloc
 }
 

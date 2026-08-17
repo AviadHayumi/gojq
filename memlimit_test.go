@@ -1,6 +1,7 @@
 package gojq
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -195,5 +196,38 @@ func TestMaxAllocStopsFromJSON(t *testing.T) {
 	}
 	if _, isAlloc := v.(*allocLimitError); !isAlloc {
 		t.Errorf("expected *allocLimitError, got %v", v)
+	}
+}
+
+
+// a recursive function that binds many variables or takes many arguments grows
+// the interpreter's value-slot slice (env.values) far faster than its scope
+// stack, so the slot slice must be part of the live stack limit too.
+func TestMaxAllocStopsValueSlotGrowth(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	var binds strings.Builder
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&binds, ". as $a%d | ", i)
+	}
+	for _, src := range []string{
+		"def f: " + binds.String() + "[f]; f",                        // many bindings per level
+		"def f($a;$b;$c;$d;$e;$f;$g;$h): f(.;.;.;.;.;.;.;.); f(.;.;.;.;.;.;.;.)", // many args
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse: %s", err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile: %s", err)
+		}
+		v, ok := code.Run("x").Next()
+		if !ok {
+			t.Errorf("expected an error, got no result")
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("expected *allocLimitError, got %v", v)
+		}
 	}
 }
