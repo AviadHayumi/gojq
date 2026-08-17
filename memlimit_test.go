@@ -503,3 +503,45 @@ func TestMaxAllocBoundsAdd(t *testing.T) {
 		}
 	}
 }
+
+
+// flatten builds its flat result with an internal append; keys / to_entries make
+// an array of the input length. all are charged only at the end, so on a large
+// input flatten alone hit 5.8 GB. they must error while small inputs still work.
+func TestMaxAllocBoundsFlattenKeys(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	nested := make([]any, 20)
+	for i := range nested {
+		inner := make([]any, 20000)
+		for j := range inner {
+			inner[j] = float64(j)
+		}
+		nested[i] = inner
+	}
+	bigObj := map[string]any{}
+	for i := 0; i < 400000; i++ {
+		bigObj[fmt.Sprintf("k%d", i)] = float64(i)
+	}
+	for _, c := range []struct {
+		src string
+		in  any
+	}{
+		{`flatten`, nested},
+		{`keys`, bigObj},
+		{`to_entries`, bigObj},
+	} {
+		query, _ := Parse(c.src)
+		code, _ := Compile(query)
+		if v, _ := code.Run(c.in).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+			t.Errorf("%q on a large input: expected an allocation error, got a value", c.src)
+		}
+	}
+
+	q, _ := Parse(`flatten`)
+	code, _ := Compile(q)
+	if v, ok := code.Run([]any{[]any{1.0, 2.0}, []any{3.0}}).Next(); !ok || fmt.Sprint(v) != "[1 2 3]" {
+		t.Errorf("flatten: expected [1 2 3], got %v", v)
+	}
+}

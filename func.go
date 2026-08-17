@@ -352,12 +352,18 @@ func funcUtf8ByteLength(v any) any {
 func funcKeys(v any) any {
 	switch v := v.(type) {
 	case []any:
+		if arrayTooLarge(len(v)) {
+			return &allocLimitError{}
+		}
 		w := make([]any, len(v))
 		for i := range v {
 			w[i] = i
 		}
 		return w
 	case map[string]any:
+		if arrayTooLarge(len(v)) {
+			return &allocLimitError{}
+		}
 		w := make([]any, len(v))
 		for i, k := range keys(v) {
 			w[i] = k
@@ -778,6 +784,9 @@ func funcImplode(v any) any {
 				sb.WriteRune(rune(r))
 			} else {
 				sb.WriteRune(utf8.RuneError)
+			}
+			if MaxAlloc > 0 && int64(sb.Len()) > MaxAlloc {
+				return &allocLimitError{}
 			}
 		} else {
 			return &func0TypeError{"implode", vs}
@@ -1200,7 +1209,16 @@ func clampIndex(i, minimum, maximum int) int {
 	}
 }
 
-func funcFlatten(v any, args []any) any {
+func funcFlatten(v any, args []any) (r any) {
+	defer func() {
+		if e := recover(); e != nil {
+			if _, ok := e.(*allocLimitError); ok {
+				r = &allocLimitError{}
+				return
+			}
+			panic(e)
+		}
+	}()
 	vs, ok := values(v)
 	if !ok {
 		return &func0TypeError{"flatten", v}
@@ -1226,6 +1244,9 @@ func flatten(xs, vs []any, depth float64) []any {
 			xs = flatten(xs, vs, depth-1)
 		} else {
 			xs = append(xs, v)
+			if arrayTooLarge(len(xs)) {
+				panic(&allocLimitError{})
+			}
 		}
 	}
 	return xs
