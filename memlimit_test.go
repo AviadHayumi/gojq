@@ -985,6 +985,43 @@ func TestMaxAllocErrorFormattingBounded(t *testing.T) {
 	}
 }
 
+// Encoding a big integer to base 10 ( tojson / tostring / @json / interpolation )
+// runs v.Append(buf, 10), which allocates large superlinear scratch inside
+// math/big: a 4 MB integer peaks past 100 MB , none of it seen by the encoder's
+// between-values guard. A ~512 KB integer builds fine ( under the limit ) yet its
+// decimal form costs ~25 MB , so serializing it is now refused.
+func TestMaxAllocBoundsBigintEncoding(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`(reduce range(22) as $x (2; . * .)) | tojson`,
+		`(reduce range(22) as $x (2; . * .)) | tostring`,
+		`(reduce range(22) as $x (2; . * .)) | @json`,
+	} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(nil).Next(); !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// ordinary numbers, including a moderately large big integer, still serialize.
+	for _, tc := range []struct{ src, want string }{
+		{`12345 | tojson`, `12345`},
+		{`(2 | . * . * .) | tojson`, `8`},
+		{`(reduce range(10) as $x (2; . * .)) | tojson | length > 0`, `true`},
+	} {
+		q, _ := Parse(tc.src)
+		c, _ := Compile(q)
+		if v, ok := c.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

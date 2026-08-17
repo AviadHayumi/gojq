@@ -114,6 +114,14 @@ func (e *encoder) encode(v any) {
 	case float64:
 		e.encodeFloat64(v)
 	case *big.Int:
+		// Converting a big integer to base 10 allocates large superlinear scratch
+		// inside math/big (a 4 MB integer peaks past 100 MB), none of it visible to
+		// the between-values guard above. Reject one whose decimal form could pass
+		// the limit; the widest realistic integer is tiny, so this only refuses
+		// absurd multi-hundred-thousand-digit values.
+		if MaxAlloc > 0 && int64(len(v.Bits()))*384 > MaxAlloc {
+			panic(&allocLimitError{})
+		}
 		e.w.Write(v.Append(e.buf[:0], 10))
 	case json.Number:
 		e.w.WriteString(v.String())
