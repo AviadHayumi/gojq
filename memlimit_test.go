@@ -810,3 +810,26 @@ func TestMaxAllocBoundsObjectUpdate(t *testing.T) {
 		t.Errorf(".c=3: got %v", v)
 	}
 }
+
+
+// add's map path clones the first map (maps.Clone) unguarded; a caller-provided
+// array with a big map first element made add copy it (156 MB) before the merge
+// guard. must error; the first-array case was already guarded in round 25.
+func TestMaxAllocBoundsAddMapClone(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+	big := map[string]any{}
+	for i := 0; i < 2000000; i++ {
+		big[fmt.Sprint(i)] = float64(i)
+	}
+	query, _ := Parse(`add`)
+	code, _ := Compile(query)
+	if v, _ := code.Run([]any{big, map[string]any{"z": 1.0}}).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("add of [bigmap, ...]: expected an allocation error, got a value")
+	}
+	q, _ := Parse(`add`)
+	c, _ := Compile(q)
+	if v, ok := c.Run([]any{map[string]any{"a": 1.0}, map[string]any{"b": 2.0}}).Next(); !ok || fmt.Sprint(v) != "map[a:1 b:2]" {
+		t.Errorf("add of small maps: got %v", v)
+	}
+}
