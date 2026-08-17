@@ -1561,3 +1561,38 @@ func TestMaxAllocBoundsDAGAssignment(t *testing.T) {
 		t.Errorf("assignment on small value: got %v", v2)
 	}
 }
+
+// funcMatch builds each match object's nested captures array internally, not
+// through the collect opcodes, so the shallow value meter charged only the
+// top-level match map ( ~112 bytes ) while the object holds one capture map per
+// group. A query collecting many matches, each with many capture groups,
+// allocated hundreds of MB ( a short regex reached ~950 MB ) while the meter saw
+// almost nothing. matchResultSize now charges the captures' real size.
+func TestMaxAllocBoundsMatchCaptures(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// 10000 matches, each with 50 capture groups; the captures dominate the
+	// object and must be charged, so this errors instead of building ~GB.
+	src := `("(.)" * 50) as $re | ("a" * 50) as $s | [range(10000) | ($s | match($re))] | length`
+	query, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := code.Run(nil).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected an allocation error for many capture-heavy matches, got %v", v)
+	}
+
+	// an ordinary match with capture groups still works.
+	q2, _ := Parse(`"2024-01-15" | [match("([0-9]+)-([0-9]+)-([0-9]+)").captures[].string]`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(nil).Next(); !ok || fmt.Sprint(v2) != "[2024 01 15]" {
+		t.Errorf("ordinary match: got %v", v2)
+	}
+}

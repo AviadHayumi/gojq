@@ -2281,14 +2281,14 @@ func funcMatch(v, re, fs, testing any, cache *reCache) any {
 			}
 			captures[j-1] = map[string]any{
 				"name":   name,
-				"offset": len([]rune(s[:x[j*2]])),
-				"length": len([]rune(s[:x[j*2+1]])) - len([]rune(s[:x[j*2]])),
+				"offset": utf8.RuneCountInString(s[:x[j*2]]),
+				"length": utf8.RuneCountInString(s[:x[j*2+1]]) - utf8.RuneCountInString(s[:x[j*2]]),
 				"string": s[x[j*2]:x[j*2+1]],
 			}
 		}
 		res[i] = map[string]any{
-			"offset":   len([]rune(s[:x[0]])),
-			"length":   len([]rune(s[:x[1]])) - len([]rune(s[:x[0]])),
+			"offset":   utf8.RuneCountInString(s[:x[0]]),
+			"length":   utf8.RuneCountInString(s[:x[1]]) - utf8.RuneCountInString(s[:x[0]]),
 			"string":   s[x[0]:x[1]],
 			"captures": captures,
 		}

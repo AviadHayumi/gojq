@@ -41,6 +41,36 @@ func allocSize(v any) int64 {
 	}
 }
 
+// matchResultSize is the deep byte size of a _match result: an array of match
+// objects, each holding a captures array of capture objects. allocSize is
+// shallow, so without accounting for the nested captures a query that collects
+// many matches ( each with many capture groups ) allocates far past MaxAlloc
+// while the meter, seeing only the top-level array, charges almost nothing. The
+// shape is fixed ( array -> match map -> captures array -> capture map ), so
+// this is a bounded walk, not open recursion.
+func matchResultSize(w any) int64 {
+	res, ok := w.([]any)
+	if !ok {
+		return allocSize(w)
+	}
+	n := allocSize(res)
+	for _, m := range res {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			n += allocSize(m)
+			continue
+		}
+		n += allocSize(mm)
+		if caps, ok := mm["captures"].([]any); ok {
+			n += allocSize(caps)
+			for _, c := range caps {
+				n += allocSize(c)
+			}
+		}
+	}
+	return n
+}
+
 // chargeBytes adds n to the running total and reports whether the limit has
 // now been exceeded.
 func (env *env) chargeBytes(n int64) bool {

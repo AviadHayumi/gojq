@@ -214,7 +214,17 @@ loop:
 					break loop
 				}
 				env.push(w)
-				if env.charge(w) {
+				n := allocSize(w)
+				if MaxAlloc > 0 {
+					if name, _ := v[2].(string); name == "_match" {
+						// _match builds nested capture objects the shallow
+						// meter cannot see; charge their real size, else a
+						// query collecting many matches allocates unbounded
+						// while the meter charges almost nothing.
+						n = matchResultSize(w)
+					}
+				}
+				if env.chargeBytes(n) {
 					err = &allocLimitError{}
 					break loop
 				}
