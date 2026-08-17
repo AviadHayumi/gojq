@@ -1296,6 +1296,9 @@ func sortItems(name string, v, x any) ([]*sortItem, error) {
 	if len(vs) != len(xs) {
 		return nil, &func1WrapError{name, v, x, &lengthMismatchError{}}
 	}
+	if arrayTooLarge(len(vs)) {
+		return nil, &allocLimitError{}
+	}
 	items := make([]*sortItem, len(vs))
 	for i, v := range vs {
 		items[i] = &sortItem{v, xs[i]}
@@ -1318,6 +1321,9 @@ func sortBy(name string, v, x any) any {
 	items, err := sortItems(name, v, x)
 	if err != nil {
 		return err
+	}
+	if arrayTooLarge(len(items)) {
+		return &allocLimitError{}
 	}
 	rs := make([]any, len(items))
 	for i, x := range items {

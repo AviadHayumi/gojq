@@ -64,3 +64,42 @@ func TestMaxAllocAllowsNormal(t *testing.T) {
 		}
 	}
 }
+
+// each of these builtins used to build an input-proportional value in one make()
+// before the value meter could charge it. with MaxAlloc set they must now error.
+func TestMaxAllocStopsSingleShotBuiltins(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 1 << 20 // 1 MiB
+
+	bigStr := strings.Repeat("a", 1<<20)
+	bigArr := make([]any, 1<<20)
+	for i := range bigArr {
+		bigArr[i] = float64(i)
+	}
+	for _, c := range []struct {
+		src string
+		in  any
+	}{
+		{`explode`, bigStr},      // string -> []any (x16)
+		{`. / ""`, bigStr},       // split operator on empty separator
+		{`split("")`, bigStr},    // split builtin
+		{`reverse`, bigArr},      // input-sized array copy
+		{`sort`, bigArr},         // sortItems make
+		{`unique`, bigArr},       // via sort
+	} {
+		query, err := Parse(c.src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", c.src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", c.src, err)
+		}
+		v, ok := code.Run(c.in).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", c.src)
+		} else if _, isErr := v.(error); !isErr {
+			t.Errorf("%q: expected an allocation error, got a value", c.src)
+		}
+	}
+}
