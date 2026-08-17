@@ -12,11 +12,11 @@ func TestMaxAllocStopsBombs(t *testing.T) {
 	MaxAlloc = 4 << 20 // 4 MiB
 
 	for _, src := range []string{
-		`"x" * 2000000000`,                        // string repeat
-		`"xx"` + strings.Repeat(" | . + .", 30),   // doubling chain
-		`[range(100000000)]`,                       // huge array
-		`null | setpath([50000000]; 1)`,            // huge sparse array
-		`reduce range(60) as $i ("xx"; . + .)`,     // growing reduce
+		`"x" * 2000000000`,                      // string repeat
+		`"xx"` + strings.Repeat(" | . + .", 30), // doubling chain
+		`[range(100000000)]`,                    // huge array
+		`null | setpath([50000000]; 1)`,         // huge sparse array
+		`reduce range(60) as $i ("xx"; . + .)`,  // growing reduce
 	} {
 		query, err := Parse(src)
 		if err != nil {
@@ -81,12 +81,12 @@ func TestMaxAllocStopsSingleShotBuiltins(t *testing.T) {
 		src string
 		in  any
 	}{
-		{`explode`, bigStr},      // string -> []any (x16)
-		{`. / ""`, bigStr},       // split operator on empty separator
-		{`split("")`, bigStr},    // split builtin
-		{`reverse`, bigArr},      // input-sized array copy
-		{`sort`, bigArr},         // sortItems make
-		{`unique`, bigArr},       // via sort
+		{`explode`, bigStr},   // string -> []any (x16)
+		{`. / ""`, bigStr},    // split operator on empty separator
+		{`split("")`, bigStr}, // split builtin
+		{`reverse`, bigArr},   // input-sized array copy
+		{`sort`, bigArr},      // sortItems make
+		{`unique`, bigArr},    // via sort
 	} {
 		query, err := Parse(c.src)
 		if err != nil {
@@ -104,7 +104,6 @@ func TestMaxAllocStopsSingleShotBuiltins(t *testing.T) {
 		}
 	}
 }
-
 
 // deep or infinite recursion grows the interpreter's own stacks (operands,
 // forks, scopes) without ever completing a value, so the value meter never
@@ -142,7 +141,6 @@ func TestMaxAllocStopsRecursionAndBigint(t *testing.T) {
 	}
 }
 
-
 // a value in a []any slot costs 16 bytes for the slot plus its own footprint,
 // so an array of a million one-character strings is ~33 MB, not the ~1 MB its
 // contents suggest. before charging the slot, such an array grew far past the
@@ -154,7 +152,7 @@ func TestMaxAllocCountsArraySlots(t *testing.T) {
 	for _, src := range []string{
 		`[range(1000000) | tostring]`,       // a million tiny strings
 		`[range(1000000) | tostring] | add`, // ... then concatenated
-		`[range(1000000)]`,                   // a million boxed numbers
+		`[range(1000000)]`,                  // a million boxed numbers
 	} {
 		query, err := Parse(src)
 		if err != nil {
@@ -172,7 +170,6 @@ func TestMaxAllocCountsArraySlots(t *testing.T) {
 		}
 	}
 }
-
 
 // fromjson builds a whole structure from one json.Decode; a 2 MB array string
 // of a million ones would materialize ~16 MB before the value meter saw it.
@@ -199,7 +196,6 @@ func TestMaxAllocStopsFromJSON(t *testing.T) {
 	}
 }
 
-
 // a recursive function that binds many variables or takes many arguments grows
 // the interpreter's value-slot slice (env.values) far faster than its scope
 // stack, so the slot slice must be part of the live stack limit too.
@@ -212,7 +208,7 @@ func TestMaxAllocStopsValueSlotGrowth(t *testing.T) {
 		fmt.Fprintf(&binds, ". as $a%d | ", i)
 	}
 	for _, src := range []string{
-		"def f: " + binds.String() + "[f]; f",                        // many bindings per level
+		"def f: " + binds.String() + "[f]; f",                                    // many bindings per level
 		"def f($a;$b;$c;$d;$e;$f;$g;$h): f(.;.;.;.;.;.;.;.); f(.;.;.;.;.;.;.;.)", // many args
 	} {
 		query, err := Parse(src)
@@ -231,7 +227,6 @@ func TestMaxAllocStopsValueSlotGrowth(t *testing.T) {
 		}
 	}
 }
-
 
 // compileRegexp caches every distinct pattern; a run generating millions of
 // them once grew the cache to 70-95 MB (and it persisted after the run). the
@@ -255,7 +250,6 @@ func TestRegexpCacheBounded(t *testing.T) {
 		t.Errorf("regex broken after cache filled: r=%v err=%v", r, err)
 	}
 }
-
 
 // match with the "g" flag builds one map per match (plus one per capture group)
 // in a single make, and the result array is charged only shallowly, so a global
@@ -294,7 +288,6 @@ func TestMaxAllocBoundsGlobalMatch(t *testing.T) {
 	}
 }
 
-
 // the gas meter must not count transient scalars: a streaming query that
 // produces millions of numbers but holds one accumulator (a counting reduce)
 // would otherwise trip the limit though it holds almost nothing live. it must
@@ -330,7 +323,6 @@ func TestMaxAllocAllowsStreaming(t *testing.T) {
 		t.Errorf("collecting 2M elements should error, got %v", v2)
 	}
 }
-
 
 // fromjson yields json.Number values, a distinct type from string. allocSize and
 // the streaming decoder must size them by their digit length, or a JSON document
@@ -373,7 +365,6 @@ func TestMaxAllocSizesJSONNumbers(t *testing.T) {
 		t.Errorf("small fromjson: expected 10, got %v", v2)
 	}
 }
-
 
 // index/indices/rindex on a string explode the whole haystack to a []any of
 // runes (x16); on a big string that materialized tens of MB the meter never saw
@@ -418,7 +409,6 @@ func TestMaxAllocBoundsIndex(t *testing.T) {
 	}
 }
 
-
 // shared references (`[., .]` repeated) make a value whose own footprint is tiny
 // expand to an exponentially larger JSON encoding. tojson / tostring / @json
 // build the whole string before the meter, which only sees the result, can
@@ -428,7 +418,7 @@ func TestMaxAllocBoundsEncoding(t *testing.T) {
 	MaxAlloc = 4 << 20
 
 	for _, src := range []string{
-		`reduce range(30) as $i (0; [., .]) | tojson`,   // O(30) DAG, 2^30 expansion
+		`reduce range(30) as $i (0; [., .]) | tojson`, // O(30) DAG, 2^30 expansion
 		`reduce range(30) as $i (0; [., .]) | tostring`,
 		`reduce range(25) as $i ({}; {a: ., b: .}) | tojson`,
 	} {
@@ -456,6 +446,45 @@ func TestMaxAllocBoundsEncoding(t *testing.T) {
 	}
 }
 
+// A single string whose escaped form is far larger than the string itself
+// (each control byte becomes \u00XX, six bytes) amplifies inside encodeString,
+// which escapes the whole string in one uninterrupted loop. The between-values
+// guard in encode never fires mid-string, so tojson / @json built the entire
+// escaped blob (a 2 MB input reaching ~12 MB, peaking far higher through buffer
+// doubling) before the value meter, seeing only the finished string, could
+// charge it. The guard inside encodeString stops the escape past MaxAlloc.
+func TestMaxAllocBoundsStringEscaping(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// 2 MB of control bytes: the input is under the limit, its escaping is not.
+	ctrl := strings.Repeat(string(rune(1)), 2<<20)
+	for _, src := range []string{`tojson`, `@json`} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		v, ok := code.Run(ctrl).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// a clean string under the limit still encodes: no escapes, guard never trips.
+	q2, _ := Parse(`tojson`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(strings.Repeat("x", 1<<20)).Next(); !ok {
+		t.Errorf("clean string: expected a result, got none")
+	} else if _, isAlloc := v2.(*allocLimitError); isAlloc {
+		t.Errorf("clean string under the limit should encode, got alloc error")
+	}
+}
 
 // add accumulates the whole sum internally (a strings.Builder for strings, an
 // append for arrays, a merge for maps) and is charged only at the end, so on a
@@ -504,7 +533,6 @@ func TestMaxAllocBoundsAdd(t *testing.T) {
 	}
 }
 
-
 // flatten builds its flat result with an internal append; keys / to_entries make
 // an array of the input length. all are charged only at the end, so on a large
 // input flatten alone hit 5.8 GB. they must error while small inputs still work.
@@ -545,7 +573,6 @@ func TestMaxAllocBoundsFlattenKeys(t *testing.T) {
 		t.Errorf("flatten: expected [1 2 3], got %v", v)
 	}
 }
-
 
 // .[] (opiter) builds a []pathValue of the input length to iterate, unmetered,
 // so `.[] | select(false)` on a big map completed blind at 167 MB. transpose
@@ -601,7 +628,6 @@ func TestMaxAllocBoundsIterTranspose(t *testing.T) {
 	}
 }
 
-
 // object/array merge operators (. + . shallow, . * . deep) build the merged
 // result internally before the opcall charges it; on a big input object they hit
 // 160 MB. the flat makes and deepMergeObjects (recursive) must be bounded.
@@ -621,10 +647,10 @@ func TestMaxAllocBoundsMerge(t *testing.T) {
 		src string
 		in  any
 	}{
-		{`. + .`, big},           // shallow object merge
-		{`. * .`, big},           // deep object merge, wide
-		{`. * {"new": 1}`, big},  // deep merge copies the big object
-		{`. * .`, deep},          // deep merge, deep
+		{`. + .`, big},          // shallow object merge
+		{`. * .`, big},          // deep object merge, wide
+		{`. * {"new": 1}`, big}, // deep merge copies the big object
+		{`. * .`, deep},         // deep merge, deep
 	} {
 		query, _ := Parse(c.src)
 		code, _ := Compile(query)
@@ -650,7 +676,6 @@ func TestMaxAllocBoundsMerge(t *testing.T) {
 	}
 }
 
-
 // array subtraction (. - r) pre-allocates a result with cap len(l); on a big
 // input array that upfront allocation must be bounded.
 func TestMaxAllocBoundsSubtract(t *testing.T) {
@@ -674,7 +699,6 @@ func TestMaxAllocBoundsSubtract(t *testing.T) {
 		t.Errorf("subtract: expected [1 4], got %v", v)
 	}
 }
-
 
 // @csv/@tsv/@sh build a []string of the whole row width (formatJoin) before the
 // opcall charges the joined result; on a big row array that make is unbounded.
@@ -701,7 +725,6 @@ func TestMaxAllocBoundsFormatJoin(t *testing.T) {
 		t.Errorf("@csv: got %v", v)
 	}
 }
-
 
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
@@ -735,7 +758,6 @@ func TestMaxAllocBoundsValues(t *testing.T) {
 	}
 }
 
-
 // encodeObject makes a []keyVal of the map's size to sort keys, at object entry -
 // before the encoder's output-length check (round 22) - so tojson/tostring/@json
 // of a big map spiked on it. must error, small objects still encode sorted.
@@ -759,7 +781,6 @@ func TestMaxAllocBoundsEncodeObject(t *testing.T) {
 		t.Errorf("tojson small object: got %v", v)
 	}
 }
-
 
 // slice assignment (.[a:b] = x) rebuilds the array via a.makeArray(~len(v));
 // on a big input array that make must be bounded. small slices still work.
@@ -785,7 +806,6 @@ func TestMaxAllocBoundsSliceAssign(t *testing.T) {
 	}
 }
 
-
 // setpath/modify/del on a map copy it via a.makeObject(len(v)+1); on a big map
 // that copy is unbounded. must error (message-matched - setpath wraps it).
 func TestMaxAllocBoundsObjectUpdate(t *testing.T) {
@@ -810,7 +830,6 @@ func TestMaxAllocBoundsObjectUpdate(t *testing.T) {
 		t.Errorf(".c=3: got %v", v)
 	}
 }
-
 
 // add's map path clones the first map (maps.Clone) unguarded; a caller-provided
 // array with a big map first element made add copy it (156 MB) before the merge

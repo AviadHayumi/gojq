@@ -144,6 +144,9 @@ func (e *encoder) encodeString(s string) {
 			if start < i {
 				e.w.WriteString(s[start:i])
 			}
+			if MaxAlloc > 0 && int64(e.w.Len()) > MaxAlloc {
+				panic(&allocLimitError{})
+			}
 			switch b {
 			case '"':
 				e.w.WriteString(`\"`)
@@ -173,6 +176,9 @@ func (e *encoder) encodeString(s string) {
 		if c == utf8.RuneError && size == 1 {
 			if start < i {
 				e.w.WriteString(s[start:i])
+			}
+			if MaxAlloc > 0 && int64(e.w.Len()) > MaxAlloc {
+				panic(&allocLimitError{})
 			}
 			e.w.WriteString(`\ufffd`)
 			i += size
