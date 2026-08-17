@@ -1379,3 +1379,35 @@ func TestMaxAllocBoundsAddMapClone(t *testing.T) {
 		t.Errorf("add of small maps: got %v", v)
 	}
 }
+
+// A memory-limit error can be caught by try/catch, //, or ?, but the meter is
+// monotonic: catching it does not reset env.alloc, so a further allocation
+// after the catch still fails. This is what stops a suppress-and-retry loop
+// from defeating the limit by swallowing each error and allocating again.
+func TestMaxAllocMonotonicAcrossCatch(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`try [range(1000000)] catch "caught" | [range(1000000)] | length`,
+		`(([range(1000000)] | length) // 999) | . + ([range(1000000)] | length)`,
+		`reduce range(1000) as $_ (0; . + (([range(1000000)] | length)? // 0))`,
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("%q: parse: %v", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("%q: compile: %v", src, err)
+		}
+		v, ok := code.Run(nil).Next()
+		if !ok {
+			t.Errorf("%q: expected a result", src)
+			continue
+		}
+		if _, isErr := v.(error); !isErr {
+			t.Errorf("%q: expected the limit to hold after the catch, got %v", src, v)
+		}
+	}
+}
