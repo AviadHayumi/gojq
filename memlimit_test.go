@@ -701,3 +701,36 @@ func TestMaxAllocBoundsFormatJoin(t *testing.T) {
 		t.Errorf("@csv: got %v", v)
 	}
 }
+
+
+// add/flatten/join on a map go through values(), which makes a []any of the
+// map's size; on a big map that make is unmetered, so `add` (result is a number)
+// completed meter-blind. values() must error on a big map, keeping correctness.
+func TestMaxAllocBoundsValues(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := map[string]any{}
+	for i := 0; i < 2000000; i++ {
+		big[fmt.Sprint(i)] = float64(i)
+	}
+	for _, src := range []string{`add`, `flatten`} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, _ := code.Run(big).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+			t.Errorf("%s on a big map: expected an allocation error, got a value", src)
+		}
+	}
+
+	// small map ops still correct, and the type error is preserved.
+	q, _ := Parse(`add`)
+	code, _ := Compile(q)
+	if v, ok := code.Run(map[string]any{"a": 1.0, "b": 2.0}).Next(); !ok || fmt.Sprint(v) != "3" {
+		t.Errorf("add on small map: expected 3, got %v", v)
+	}
+	q2, _ := Parse(`add`)
+	c2, _ := Compile(q2)
+	if v, _ := c2.Run("x").Next(); func() bool { _, ok := v.(*allocLimitError); return ok }() {
+		t.Errorf("add on a string should be a type error, not an alloc error")
+	}
+}

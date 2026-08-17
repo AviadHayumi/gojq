@@ -385,18 +385,23 @@ func keys(v map[string]any) []string {
 	return w
 }
 
-func values(v any) ([]any, bool) {
+var errNotIterable = errors.New("not iterable")
+
+func values(v any) ([]any, error) {
 	switch v := v.(type) {
 	case []any:
-		return v, true
+		return v, nil
 	case map[string]any:
+		if arrayTooLarge(len(v)) {
+			return nil, &allocLimitError{}
+		}
 		vs := make([]any, len(v))
 		for i, k := range keys(v) {
 			vs[i] = v[k]
 		}
-		return vs, true
+		return vs, nil
 	default:
-		return nil, false
+		return nil, errNotIterable
 	}
 }
 
@@ -418,9 +423,12 @@ func funcHas(v, x any) any {
 }
 
 func funcAdd(v any) any {
-	vs, ok := values(v)
-	if !ok {
-		return &func0TypeError{"add", v}
+	vs, err := values(v)
+	if err != nil {
+		if err == errNotIterable {
+			return &func0TypeError{"add", v}
+		}
+		return err
 	}
 	return add(slices.Values(vs))
 }
@@ -816,9 +824,12 @@ func funcSplit(v, x any) any {
 }
 
 func funcJoin(v, x any) any {
-	vs, ok := values(v)
-	if !ok {
-		return &func1TypeError{"join", v, x}
+	vs, err := values(v)
+	if err != nil {
+		if err == errNotIterable {
+			return &func1TypeError{"join", v, x}
+		}
+		return err
 	}
 	if len(vs) == 0 {
 		return ""
@@ -1222,14 +1233,18 @@ func funcFlatten(v any, args []any) (r any) {
 			panic(e)
 		}
 	}()
-	vs, ok := values(v)
-	if !ok {
-		return &func0TypeError{"flatten", v}
+	vs, err := values(v)
+	if err != nil {
+		if err == errNotIterable {
+			return &func0TypeError{"flatten", v}
+		}
+		return err
 	}
 	var depth float64
 	if len(args) == 0 {
 		depth = -1
 	} else {
+		var ok bool
 		depth, ok = toFloat(args[0])
 		if !ok {
 			return &func0TypeError{"flatten", args[0]}
