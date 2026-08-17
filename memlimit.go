@@ -76,7 +76,6 @@ func (env *env) overStackLimit() bool {
 		int64(len(env.forks))*72 > MaxAlloc
 }
 
-
 // decodeJSONLimited decodes one JSON value from dec, tracking the cumulative
 // shallow size of the structure it builds and erroring once that size passes
 // MaxAlloc. It mirrors json.Decoder.Decode under UseNumber, so a huge document
