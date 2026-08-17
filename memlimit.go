@@ -146,6 +146,32 @@ func spineSize(w, p any) int64 {
 	return total
 }
 
+// deepMergeSize is the byte size of the fresh maps that map * map ( deepmerge )
+// builds. deepMergeObjectsLimited recurses only where both sides hold a map, so
+// it copies a spine of new maps and shares the rest by reference; charging the
+// whole result would over-count the shared branches, and charging only the top
+// misses the recursion, so collecting many deep merges allocated GB. This walks
+// the same overlap the merge does, so it charges exactly the new maps. It is
+// bounded because the merge already refused ( via its own size counter ) any
+// result larger than MaxAlloc, and it returns 0 for non-map operands ( ordinary
+// numeric / string multiply, charged by allocSize as before ).
+func deepMergeSize(l, r any) int64 {
+	lm, lok := l.(map[string]any)
+	rm, rok := r.(map[string]any)
+	if !lok || !rok {
+		return 0
+	}
+	n := int64(len(lm)+len(rm))*24 + 16
+	for k, rv := range rm {
+		if lv, ok := lm[k].(map[string]any); ok {
+			if _, ok := rv.(map[string]any); ok {
+				n += deepMergeSize(lv, rv)
+			}
+		}
+	}
+	return n
+}
+
 // chargeBytes adds n to the running total and reports whether the limit has
 // now been exceeded.
 func (env *env) chargeBytes(n int64) bool {

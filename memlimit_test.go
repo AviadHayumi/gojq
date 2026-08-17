@@ -1708,3 +1708,42 @@ func TestMaxAllocBoundsSetpathSpine(t *testing.T) {
 		t.Errorf("assignment: got %v", v3)
 	}
 }
+
+// map * map ( deepmerge ) recursively builds fresh merged maps via make(), the
+// same shape as setpath: update tracks the merged size in a per-call local
+// counter that bounds a single merge, but the result was charged to the run
+// meter only at its top level. A deep-object self-merge collected in a loop
+// ( a 1000-deep object reached ~7 GB ) allocated the merged maps unbounded.
+// deepMergeSize now charges them by walking the same overlap the merge does.
+func TestMaxAllocBoundsDeepmerge(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	src := `reduce range(1000) as $i ({}; {a: .}) as $d | [range(1000000) | ($d * $d)] | length`
+	query, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := code.Run(nil).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected an allocation error collecting deep merges, got %v", v)
+	}
+
+	// ordinary merge, and numeric / string multiply, are unaffected.
+	for _, tc := range []struct{ src, want string }{
+		{`{a: {b: 1}, c: 2} * {a: {d: 3}, e: 4}`, "map[a:map[b:1 d:3] c:2 e:4]"},
+		{`6 * 7`, "42"},
+		{`"ab" * 3`, "ababab"},
+	} {
+		q, _ := Parse(tc.src)
+		c, _ := Compile(q)
+		if v, ok := c.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}

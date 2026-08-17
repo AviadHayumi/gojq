@@ -239,6 +239,14 @@ loop:
 						// meter cannot see; charge that spine, else collecting
 						// many deep-path setpaths allocates unbounded.
 						n = spineSize(w, args[0])
+					case "_multiply":
+						// map * map ( deepmerge ) builds fresh merged maps
+						// recursively the shallow meter cannot see; charge them,
+						// else collecting many deep merges allocates unbounded.
+						// ( 0 for non-map multiply, which keeps allocSize(w). )
+						if s := deepMergeSize(args[0], args[1]); s > 0 {
+							n = s
+						}
 					}
 				}
 				if env.chargeBytes(n) {
