@@ -117,6 +117,35 @@ func transposeResultSize(w any) int64 {
 	return n
 }
 
+// spineSize is the byte size of the fresh spine setpath copies: the containers
+// from the root down to the target along the path. setpath ( and |= / = ) copy
+// only this spine and share the rest of the input by reference, so charging the
+// whole result ( deepSize ) would over-count the shared branches and reject
+// legitimate multi-assignments; charging only the top ( allocSize ) misses the
+// deep spine, so collecting many deep-path setpaths allocated GB. Walking one
+// path is DAG-safe ( no branching ) and matches what update actually allocates.
+func spineSize(w, p any) int64 {
+	path, ok := p.([]any)
+	if !ok {
+		return allocSize(w)
+	}
+	var total int64
+	cur := w
+	for _, k := range path {
+		switch cur.(type) {
+		case []any, map[string]any:
+			total += allocSize(cur)
+		default:
+			return total
+		}
+		cur = funcIndex2(nil, cur, k)
+		if _, isErr := cur.(error); isErr {
+			return total
+		}
+	}
+	return total
+}
+
 // chargeBytes adds n to the running total and reports whether the limit has
 // now been exceeded.
 func (env *env) chargeBytes(n int64) bool {

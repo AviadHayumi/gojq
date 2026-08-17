@@ -1665,3 +1665,46 @@ func TestMaxAllocBoundsTransposeCollection(t *testing.T) {
 		t.Errorf("ordinary transpose: got %v", v2)
 	}
 }
+
+// setpath ( and |= / = ) copies a fresh spine of containers from the root down
+// to the target and shares the rest of the input by reference. The shallow
+// meter charged only the top of the result, so a deep-path setpath collected in
+// a loop ( a 1000-deep path reached ~2 GB ) allocated the spine unbounded.
+// spineSize now charges the copied spine, while leaving a shallow assignment
+// charged as before ( its spine is just the top ).
+func TestMaxAllocBoundsSetpathSpine(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`[range(1000) | 0] as $p | [range(1000000) | (null | setpath($p; 1))] | length`,
+		`[range(1000) | 0] as $p | [range(1000000) | (null | setpath($p; 1) | getpath($p) |= . + 1)] | length`,
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		if v, ok := code.Run(nil).Next(); !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isErr := v.(error); !isErr {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// ordinary setpath and deep assignment still produce the right value.
+	q2, _ := Parse(`setpath([0, 0, 0]; 5)`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(nil).Next(); !ok || fmt.Sprint(v2) != "[[[5]]]" {
+		t.Errorf("setpath: got %v", v2)
+	}
+	q3, _ := Parse(`.a.b.c = 7`)
+	c3, _ := Compile(q3)
+	in := map[string]any{"a": map[string]any{"b": map[string]any{"c": 1.0}}}
+	if v3, ok := c3.Run(in).Next(); !ok || fmt.Sprint(v3) != "map[a:map[b:map[c:7]]]" {
+		t.Errorf("assignment: got %v", v3)
+	}
+}

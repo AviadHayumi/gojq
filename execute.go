@@ -234,6 +234,11 @@ loop:
 						// cannot see; charge their slots, else an N-by-2
 						// transpose collected in a loop allocates unbounded.
 						n = transposeResultSize(w)
+					case "setpath", "_setpath":
+						// setpath ( and |= / = ) copies a fresh spine the shallow
+						// meter cannot see; charge that spine, else collecting
+						// many deep-path setpaths allocates unbounded.
+						n = spineSize(w, args[0])
 					}
 				}
 				if env.chargeBytes(n) {
