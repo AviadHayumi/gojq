@@ -840,6 +840,47 @@ func TestMaxAllocBoundsImplode(t *testing.T) {
 	}
 }
 
+// setpath builds the spine of nested containers toward the target, one
+// makeArray / makeObject per path element. A path of increasing indices
+// [0,1,...,N-1] pads the array at each depth to its index, so the whole structure
+// holds 1+2+...+N = N^2/2 slots while every single array stays small ( never
+// tripping the per-array guard ) and the shallow return-charge counts only the top
+// level. setpath([range(3000)];1) completed at 74 MB and [range(8000)] at 514 MB
+// under a 4 MB limit. A cumulative counter threaded through update now bounds the
+// whole spine build.
+func TestMaxAllocBoundsSetpathPadding(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`setpath([range(8000)]; 1)`,    // quadratic array padding, many small arrays
+		`setpath([200000, 200000]; 1)`, // two arrays each under the limit, cumulatively over
+	} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		// setpath wraps the allocLimitError, so match the message not the type.
+		if v, ok := code.Run(nil).Next(); !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if !strings.Contains(fmt.Sprint(v), "allocation exceeds") {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// benign setpath / assignment still build the exact structure.
+	for _, tc := range []struct{ src, want string }{
+		{`setpath(["a", "b"]; 5)`, `{"a":{"b":5}}`},
+		{`[1, 2, 3, 4] | setpath([2]; 9)`, `[1,2,9,4]`},
+		{`{} | .a.b.c = 7`, `{"a":{"b":{"c":7}}}`},
+		{`[1, 2, 3] | del(.[1])`, `[1,3]`},
+	} {
+		query, _ := Parse(tc.src + " | tojson")
+		code, _ := Compile(query)
+		if v, ok := code.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

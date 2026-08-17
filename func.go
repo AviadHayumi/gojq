@@ -1661,7 +1661,8 @@ func setpath(v, p, n any, a allocator) any {
 	if !ok {
 		return &func1TypeError{"setpath", v, p}
 	}
-	u, err := update(v, path, n, a)
+	var size int64
+	u, err := update(v, path, n, a, &size)
 	if err != nil {
 		return &func2WrapError{"setpath", v, p, n, err}
 	}
@@ -1690,13 +1691,14 @@ func delpaths(v, p any, a allocator) any {
 	//   jq -n "[0, 1, 2, 3] | delpaths([[1], [2]])" #=> [0, 3].
 	var empty struct{}
 	var err error
+	var size int64
 	u := v
 	for _, q := range paths {
 		path, ok := q.([]any)
 		if !ok {
 			return &func1WrapError{"delpaths", v, p, &expectedArrayError{q}}
 		}
-		u, err = update(u, path, empty, a)
+		u, err = update(u, path, empty, a, &size)
 		if err != nil {
 			return &func1WrapError{"delpaths", v, p, err}
 		}
@@ -1704,7 +1706,7 @@ func delpaths(v, p any, a allocator) any {
 	return deleteEmpty(u)
 }
 
-func update(v any, path []any, n any, a allocator) (any, error) {
+func update(v any, path []any, n any, a allocator, size *int64) (any, error) {
 	if len(path) == 0 {
 		return n, nil
 	}
@@ -1712,9 +1714,9 @@ func update(v any, path []any, n any, a allocator) (any, error) {
 	case string:
 		switch v := v.(type) {
 		case nil:
-			return updateObject(nil, p, path[1:], n, a)
+			return updateObject(nil, p, path[1:], n, a, size)
 		case map[string]any:
-			return updateObject(v, p, path[1:], n, a)
+			return updateObject(v, p, path[1:], n, a, size)
 		case struct{}:
 			return v, nil
 		default:
@@ -1724,9 +1726,9 @@ func update(v any, path []any, n any, a allocator) (any, error) {
 		i, _ := toInt(p)
 		switch v := v.(type) {
 		case nil:
-			return updateArrayIndex(nil, i, path[1:], n, a)
+			return updateArrayIndex(nil, i, path[1:], n, a, size)
 		case []any:
-			return updateArrayIndex(v, i, path[1:], n, a)
+			return updateArrayIndex(v, i, path[1:], n, a, size)
 		case struct{}:
 			return v, nil
 		default:
@@ -1735,9 +1737,9 @@ func update(v any, path []any, n any, a allocator) (any, error) {
 	case map[string]any:
 		switch v := v.(type) {
 		case nil:
-			return updateArraySlice(nil, p, path[1:], n, a)
+			return updateArraySlice(nil, p, path[1:], n, a, size)
 		case []any:
-			return updateArraySlice(v, p, path[1:], n, a)
+			return updateArraySlice(v, p, path[1:], n, a, size)
 		case struct{}:
 			return v, nil
 		default:
@@ -1753,7 +1755,7 @@ func update(v any, path []any, n any, a allocator) (any, error) {
 	}
 }
 
-func updateObject(v map[string]any, k string, path []any, n any, a allocator) (any, error) {
+func updateObject(v map[string]any, k string, path []any, n any, a allocator, size *int64) (any, error) {
 	x, ok := v[k]
 	if !ok && n == struct{}{} {
 		if v == nil {
@@ -1761,7 +1763,7 @@ func updateObject(v map[string]any, k string, path []any, n any, a allocator) (a
 		}
 		return v, nil
 	}
-	u, err := update(x, path, n, a)
+	u, err := update(x, path, n, a, size)
 	if err != nil {
 		return nil, err
 	}
@@ -1769,8 +1771,10 @@ func updateObject(v map[string]any, k string, path []any, n any, a allocator) (a
 		v[k] = u
 		return v, nil
 	}
-	if MaxAlloc > 0 && int64(len(v)+1)*24 > MaxAlloc {
-		return nil, &allocLimitError{}
+	if MaxAlloc > 0 {
+		if *size += int64(len(v)+1)*24 + 16; *size > MaxAlloc {
+			return nil, &allocLimitError{}
+		}
 	}
 	w := a.makeObject(len(v) + 1)
 	maps.Copy(w, v)
@@ -1778,7 +1782,7 @@ func updateObject(v map[string]any, k string, path []any, n any, a allocator) (a
 	return w, nil
 }
 
-func updateArrayIndex(v []any, i int, path []any, n any, a allocator) (any, error) {
+func updateArrayIndex(v []any, i int, path []any, n any, a allocator, size *int64) (any, error) {
 	var x any
 	if j := clampIndex(i, -1, len(v)); j < 0 {
 		if n == struct{}{} {
@@ -1805,7 +1809,7 @@ func updateArrayIndex(v []any, i int, path []any, n any, a allocator) (any, erro
 			return nil, &arrayIndexTooLargeError{i}
 		}
 	}
-	u, err := update(x, path, n, a)
+	u, err := update(x, path, n, a, size)
 	if err != nil {
 		return nil, err
 	}
@@ -1823,13 +1827,18 @@ func updateArrayIndex(v []any, i int, path []any, n any, a allocator) (any, erro
 	if i >= l {
 		l = i + 1
 	}
+	if MaxAlloc > 0 {
+		if *size += int64(l)*16 + 16; *size > MaxAlloc {
+			return nil, &allocLimitError{}
+		}
+	}
 	w := a.makeArray(l, c)
 	copy(w, v)
 	w[i] = u
 	return w, nil
 }
 
-func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator) (any, error) {
+func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator, size *int64) (any, error) {
 	s, ok := m["start"]
 	if !ok {
 		return nil, &expectedStartEndError{m}
@@ -1861,7 +1870,7 @@ func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator)
 		}
 		return v, nil
 	}
-	u, err := update(v[start:end], path, n, a)
+	u, err := update(v[start:end], path, n, a, size)
 	if err != nil {
 		return nil, err
 	}
@@ -1871,8 +1880,10 @@ func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator)
 		if len(u) == end-start && a.allocated(v) {
 			w = v
 		} else {
-			if arrayTooLarge(len(v) - (end - start) + len(u)) {
-				return nil, &allocLimitError{}
+			if MaxAlloc > 0 {
+				if *size += int64(len(v)-(end-start)+len(u))*16 + 16; *size > MaxAlloc {
+					return nil, &allocLimitError{}
+				}
 			}
 			w = a.makeArray(len(v)-(end-start)+len(u), 0)
 			copy(w, v[:start])
@@ -1885,8 +1896,10 @@ func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator)
 		if a.allocated(v) {
 			w = v
 		} else {
-			if arrayTooLarge(len(v)) {
-				return nil, &allocLimitError{}
+			if MaxAlloc > 0 {
+				if *size += int64(len(v))*16 + 16; *size > MaxAlloc {
+					return nil, &allocLimitError{}
+				}
 			}
 			w = a.makeArray(len(v), 0)
 			copy(w, v)
