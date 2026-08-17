@@ -1022,6 +1022,41 @@ func TestMaxAllocBoundsBigintEncoding(t *testing.T) {
 	}
 }
 
+// bigToFloat converted a big integer to float64 via strconv.ParseFloat(x.String()),
+// and x.String() runs the same superlinear base-10 conversion as round 78: a 10 MB
+// integer divided by a small number reached ~300 MB inside math/big, unseen by the
+// meter. Division falls back to bigToFloat when not evenly divisible, and mixed
+// int/float arithmetic on a big integer goes through it too. It now converts via
+// big.Float ( binary , bounded , correctly rounded ).
+func TestMaxAllocBigToFloatBounded(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// a big integer built by squaring, divided by a small number, exercises the
+	// bigToFloat fallback and must complete without erroring or blowing up.
+	q0, _ := Parse(`(reduce range(23) as $x (2; . * .)) / 7`)
+	c0, _ := Compile(q0)
+	if v, ok := c0.Run(nil).Next(); !ok {
+		t.Errorf("big bigint / 7: expected a result")
+	} else if _, isErr := v.(error); isErr {
+		t.Errorf("big bigint / 7: unexpected error %v", v)
+	}
+
+	// the conversion stays correct: exact division yields the exact integer, and
+	// comparisons against floats give the right result.
+	for _, tc := range []struct{ src, want string }{
+		{`(reduce range(6) as $x (2; . * .)) / 4`, `4611686018427387904`}, // 2^64 / 4 = 2^62, exact
+		{`(reduce range(6) as $x (2; . * .)) < 1e20`, `true`},             // 2^64 < 1e20 via bigToFloat
+		{`(reduce range(6) as $x (2; . * .)) > 1e19`, `true`},             // 2^64 > 1e19
+	} {
+		q, _ := Parse(tc.src)
+		c, _ := Compile(q)
+		if v, ok := c.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

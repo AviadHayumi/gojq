@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2391,10 +2390,12 @@ func bigToFloat(x *big.Int) float64 {
 	if x.IsInt64() {
 		return float64(x.Int64())
 	}
-	if f, err := strconv.ParseFloat(x.String(), 64); err == nil {
-		return f
-	}
-	return math.Inf(x.Sign())
+	// Convert through big.Float (a binary copy) rather than x.String(), whose
+	// base-10 conversion allocates large superlinear scratch inside math/big: a
+	// 10 MB integer divided by a small number reached ~300 MB, none of it seen by
+	// the value meter. Float64 already yields +/-Inf on overflow.
+	f, _ := new(big.Float).SetPrec(53).SetInt(x).Float64()
+	return f
 }
 
 func parseNumber(v json.Number) any {
