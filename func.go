@@ -1942,6 +1942,17 @@ func updateArraySlice(v []any, m map[string]any, path []any, n any, a allocator,
 }
 
 func deleteEmpty(v any) any {
+	return deleteEmptyDepth(v, 0)
+}
+
+// deleteEmptyDepth is deleteEmpty with a recursion-depth bound. delpaths walks
+// the whole result to strip empty markers, recursing on nesting; a deeply nested
+// sibling would overflow the goroutine stack. Past the depth the value already
+// exceeds the limit ; the interpreter's Next recovers the panic.
+func deleteEmptyDepth(v any, depth int) any {
+	if MaxAlloc > 0 && int64(depth)*16 > MaxAlloc {
+		panic(&allocLimitError{})
+	}
 	switch v := v.(type) {
 	case struct{}:
 		return nil
@@ -1950,7 +1961,7 @@ func deleteEmpty(v any) any {
 			if w == struct{}{} {
 				delete(v, k)
 			} else {
-				v[k] = deleteEmpty(w)
+				v[k] = deleteEmptyDepth(w, depth+1)
 			}
 		}
 		return v
@@ -1958,7 +1969,7 @@ func deleteEmpty(v any) any {
 		var j int
 		for _, w := range v {
 			if w != struct{}{} {
-				v[j] = deleteEmpty(w)
+				v[j] = deleteEmptyDepth(w, depth+1)
 				j++
 			}
 		}

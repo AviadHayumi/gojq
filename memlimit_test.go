@@ -1178,6 +1178,37 @@ func TestMaxAllocBoundsDeepRecursion(t *testing.T) {
 	}
 }
 
+// delpaths strips empty markers by walking the whole result recursively in Go
+// ( deleteEmpty ), so del of a shallow key on a value with a deeply nested sibling
+// overflowed the goroutine stack ( a fatal crash ). A depth bound now makes it
+// error ; the interpreter's Next recovers the panic.
+func TestMaxAllocBoundsDeleteEmpty(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	var deep any = 0.0
+	for i := 0; i < 500000; i++ {
+		deep = []any{deep}
+	}
+	in := map[string]any{"deep": deep, "x": 1.0}
+	for _, src := range []string{`del(.x)`, `delpaths([["x"]])`} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(in).Next(); !ok {
+			t.Errorf("%q with a deep sibling: expected an error, got no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q with a deep sibling: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// normal del still works.
+	q, _ := Parse(`del(.b) | tojson`)
+	code, _ := Compile(q)
+	if v, ok := code.Run(map[string]any{"a": 1.0, "b": 2.0}).Next(); !ok || fmt.Sprint(v) != `{"a":1}` {
+		t.Errorf(`del(.b): got %v`, v)
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.
