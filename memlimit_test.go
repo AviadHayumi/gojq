@@ -726,6 +726,45 @@ func TestMaxAllocBoundsFormatJoin(t *testing.T) {
 	}
 }
 
+// @csv / @tsv / @sh escape each string field ( a " becomes "" for csv , a '
+// becomes the four bytes \'\\'\' for sh ) through a strings.Replacer that built
+// the whole escaped field in one pass. A single quote-heavy field whose escaping
+// is several times its own size therefore materialized fully before the value
+// meter, seeing only the finished row, could charge it: a 4 MB field reached tens
+// of MB and scaled linearly with input ( a 40 MB field peaked near 230 MB ), all
+// under a 4 MB limit. boundedReplace escapes in chunks and stops past MaxAlloc.
+func TestMaxAllocBoundsFormatFieldEscaping(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// a single field whose escaped form is far larger than the field itself.
+	for _, tc := range []struct {
+		src string
+		in  any
+	}{
+		{`@csv`, []any{strings.Repeat(string(rune(34)), 3<<20)}}, // 3 MB of " -> ~6 MB
+		{`@sh`, []any{strings.Repeat("'", 3<<20)}},               // 3 MB of ' -> ~12 MB
+	} {
+		query, _ := Parse(tc.src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(tc.in).Next(); !ok {
+			t.Errorf("%s: expected an error, got no result", tc.src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%s on a huge quote-heavy field: expected an allocation error, got %v", tc.src, v)
+		}
+	}
+
+	// a clean field under the limit must still format: escaping does not expand it,
+	// so the chunked check never trips ( no false positive on large clean content ).
+	q, _ := Parse(`@csv`)
+	code, _ := Compile(q)
+	if v, ok := code.Run([]any{strings.Repeat("x", 2<<20)}).Next(); !ok {
+		t.Errorf("clean field: expected a result, got none")
+	} else if _, isAlloc := v.(*allocLimitError); isAlloc {
+		t.Errorf("clean 2 MB field under the limit should format, got alloc error")
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

@@ -975,9 +975,7 @@ var csvEscaper = strings.NewReplacer(
 )
 
 func funcToCSV(v any) any {
-	return formatJoin("csv", v, ",", func(s string) string {
-		return `"` + csvEscaper.Replace(s) + `"`
-	})
+	return formatJoin("csv", v, ",", `"`, csvEscaper.Replace)
 }
 
 var tsvEscaper = strings.NewReplacer(
@@ -989,7 +987,7 @@ var tsvEscaper = strings.NewReplacer(
 )
 
 func funcToTSV(v any) any {
-	return formatJoin("tsv", v, "\t", tsvEscaper.Replace)
+	return formatJoin("tsv", v, "\t", "", tsvEscaper.Replace)
 }
 
 var shEscaper = strings.NewReplacer(
@@ -1001,12 +999,10 @@ func funcToSh(v any) any {
 	if _, ok := v.([]any); !ok {
 		v = []any{v}
 	}
-	return formatJoin("sh", v, " ", func(s string) string {
-		return "'" + shEscaper.Replace(s) + "'"
-	})
+	return formatJoin("sh", v, " ", "'", shEscaper.Replace)
 }
 
-func formatJoin(typ string, v any, sep string, escape func(string) string) any {
+func formatJoin(typ string, v any, sep, quote string, escape func(string) string) any {
 	vs, ok := v.([]any)
 	if !ok {
 		return &func0TypeError{"@" + typ, v}
@@ -1015,12 +1011,17 @@ func formatJoin(typ string, v any, sep string, escape func(string) string) any {
 		return &allocLimitError{}
 	}
 	ss := make([]string, len(vs))
+	var total int64
 	for i, v := range vs {
 		switch v := v.(type) {
 		case []any, map[string]any:
 			return &formatRowError{typ, v}
 		case string:
-			ss[i] = escape(v)
+			s, ok := boundedReplace(escape, v)
+			if !ok {
+				return &allocLimitError{}
+			}
+			ss[i] = quote + s + quote
 		default:
 			s, err := marshalBounded(v)
 			if err != nil {
@@ -1030,8 +1031,39 @@ func formatJoin(typ string, v any, sep string, escape func(string) string) any {
 				ss[i] = s
 			}
 		}
+		if MaxAlloc > 0 {
+			if total += int64(len(ss[i])) + 16; total > MaxAlloc {
+				return &allocLimitError{}
+			}
+		}
 	}
 	return strings.Join(ss, sep)
+}
+
+// boundedReplace applies a single-byte-replacement escaper to s, stopping once
+// the escaped output would pass MaxAlloc. The csv/tsv/sh escapers each replace
+// one byte at a time, so escaping fixed-size chunks and concatenating gives the
+// same result as escaping the whole string, while never building more than the
+// limit before the check fires. A quote-heavy field that would expand to many
+// times its size is caught here instead of after it is fully materialized.
+func boundedReplace(escape func(string) string, s string) (string, bool) {
+	if MaxAlloc <= 0 {
+		return escape(s), true
+	}
+	const chunk = 1 << 16
+	if len(s) <= chunk {
+		out := escape(s)
+		return out, int64(len(out)) <= MaxAlloc
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i += chunk {
+		j := min(i+chunk, len(s))
+		b.WriteString(escape(s[i:j]))
+		if int64(b.Len()) > MaxAlloc {
+			return "", false
+		}
+	}
+	return b.String(), true
 }
 
 func funcToBase64(v any) any {
