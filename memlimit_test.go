@@ -373,3 +373,47 @@ func TestMaxAllocSizesJSONNumbers(t *testing.T) {
 		t.Errorf("small fromjson: expected 10, got %v", v2)
 	}
 }
+
+
+// index/indices/rindex on a string explode the whole haystack to a []any of
+// runes (x16); on a big string that materialized tens of MB the meter never saw
+// because the result is one number. indices on an array builds its result via an
+// internal append. both must be bounded, while small inputs still work.
+func TestMaxAllocBoundsIndex(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	bigStr := strings.Repeat("hello world ", 400000) // ~4.8 MB -> ~76 MB of runes
+	for _, src := range []string{`index("world")`, `indices("o")`, `rindex("d")`} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		v, ok := code.Run(bigStr).Next()
+		if !ok {
+			t.Errorf("%q: no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q on a big string: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	all := make([]any, 1000000)
+	for i := range all {
+		all[i] = float64(5)
+	}
+	query, _ := Parse(`indices(5)`)
+	code, _ := Compile(query)
+	if v, _ := code.Run(all).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+		t.Errorf("indices on an all-matches array: expected an allocation error, got a value")
+	}
+
+	q2, _ := Parse(`index("world")`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run("hello world").Next(); !ok || fmt.Sprint(v2) != "6" {
+		t.Errorf("small index: expected 6, got %v", v2)
+	}
+}

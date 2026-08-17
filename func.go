@@ -587,6 +587,9 @@ func indices(vs, xs []any) any {
 	for i := range len(vs) - len(xs) + 1 {
 		if Compare(vs[i:i+len(xs)], xs) == 0 {
 			rs = append(rs, i)
+			if arrayTooLarge(len(rs)) {
+				return &allocLimitError{}
+			}
 		}
 	}
 	return rs
@@ -633,6 +636,9 @@ func indexFunc(name string, v, x any, f func(_, _ []any) any) any {
 		}
 	case string:
 		if x, ok := x.(string); ok {
+			if arrayTooLarge(utf8.RuneCountInString(v)) || arrayTooLarge(utf8.RuneCountInString(x)) {
+				return &allocLimitError{}
+			}
 			return f(explode(v), explode(x))
 		}
 		return &func1TypeError{name, v, x}
