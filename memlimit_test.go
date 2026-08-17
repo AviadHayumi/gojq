@@ -954,6 +954,37 @@ func TestMaxAllocBoundsIndices(t *testing.T) {
 	}
 }
 
+// jsonMarshal backs Error()/String() formatting and runs the encode guard, which
+// panics once the buffer passes MaxAlloc. Unlike Marshal it did not recover that
+// panic, so formatting a halt_error / error that carries a big non-string value
+// ( e.g. halt_error on a large input array ) crashed the process with an uncaught
+// panic. jsonMarshal now recovers and returns the bounded prefix.
+func TestMaxAllocErrorFormattingBounded(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := make([]any, 2000000)
+	for i := range big {
+		big[i] = float64(i)
+	}
+	for _, src := range []string{`error`, `halt_error`, `halt_error(1)`} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		v, ok := code.Run(big).Next()
+		if !ok {
+			t.Fatalf("%q: expected an error value", src)
+		}
+		err, isErr := v.(error)
+		if !isErr {
+			t.Fatalf("%q: expected an error, got %T", src, v)
+		}
+		msg := err.Error() // must not panic
+		if int64(len(msg)) > MaxAlloc+64 {
+			t.Errorf("%q: error message len %d exceeds the limit", src, len(msg))
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

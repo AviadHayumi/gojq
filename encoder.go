@@ -44,6 +44,25 @@ func jsonMarshal(v any) string {
 	return sb.String()
 }
 
+// jsonMarshalTruncated is jsonMarshal but returns the bounded prefix built so far
+// instead of letting the encode guard's *allocLimitError panic escape. Error() and
+// String() methods cannot return an error, so a big value would otherwise crash
+// formatting. jsonMarshal itself must keep panicking, since marshalBounded relies
+// on that to report the limit as an error.
+func jsonMarshalTruncated(v any) (s string) {
+	var sb strings.Builder
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(*allocLimitError); !ok {
+				panic(r)
+			}
+			s = sb.String()
+		}
+	}()
+	(&encoder{w: &sb}).encode(v)
+	return sb.String()
+}
+
 // marshalBounded is jsonMarshal, but returns an allocLimitError instead of
 // building an encoding larger than MaxAlloc (see encode).
 func marshalBounded(v any) (s string, err error) {
