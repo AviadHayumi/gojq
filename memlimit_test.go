@@ -674,3 +674,30 @@ func TestMaxAllocBoundsSubtract(t *testing.T) {
 		t.Errorf("subtract: expected [1 4], got %v", v)
 	}
 }
+
+
+// @csv/@tsv/@sh build a []string of the whole row width (formatJoin) before the
+// opcall charges the joined result; on a big row array that make is unbounded.
+func TestMaxAllocBoundsFormatJoin(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	row := make([]any, 2000000)
+	for i := range row {
+		row[i] = float64(i)
+	}
+	for _, src := range []string{`@csv`, `@tsv`, `@sh`} {
+		query, _ := Parse(src)
+		code, _ := Compile(query)
+		if v, _ := code.Run(row).Next(); func() bool { _, ok := v.(*allocLimitError); return !ok }() {
+			t.Errorf("%s on a big row: expected an allocation error, got a value", src)
+		}
+	}
+
+	// small rows still format correctly.
+	q, _ := Parse(`@csv`)
+	code, _ := Compile(q)
+	if v, ok := code.Run([]any{1.0, "a,b", true, nil}).Next(); !ok || fmt.Sprint(v) != `1,"a,b",true,` {
+		t.Errorf("@csv: got %v", v)
+	}
+}

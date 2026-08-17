@@ -997,6 +997,9 @@ func formatJoin(typ string, v any, sep string, escape func(string) string) any {
 	if !ok {
 		return &func0TypeError{"@" + typ, v}
 	}
+	if arrayTooLarge(len(vs)) {
+		return &allocLimitError{}
+	}
 	ss := make([]string, len(vs))
 	for i, v := range vs {
 		switch v := v.(type) {
