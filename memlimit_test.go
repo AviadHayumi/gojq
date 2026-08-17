@@ -1747,3 +1747,32 @@ func TestMaxAllocBoundsDeepmerge(t *testing.T) {
 		}
 	}
 }
+
+// The Go-recursive builtins ( compare, encode, contains, flatten, deleteEmpty,
+// update, deepmerge, and the JSON decoder ) bound recursion depth by MaxAlloc,
+// which at a large MaxAlloc would let a deeply-nested input overflow the
+// goroutine stack - a fatal, uncatchable crash. maxRecursionDepth caps them
+// independently of MaxAlloc, turning that into a clean allocation error. This
+// exercises the JSON decoder's cap ( they all share the constant ): a string
+// nested past the cap errors instead of crashing even though MaxAlloc is huge.
+func TestMaxAllocCapsRecursionDepth(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 64 << 20 // large enough that the per-level MaxAlloc bound does not fire first
+
+	depth := maxRecursionDepth + 1000
+	doc := strings.Repeat("[", depth) + "0" + strings.Repeat("]", depth)
+	query, _ := Parse(`fromjson`)
+	code, _ := Compile(query)
+	if v, ok := code.Run(doc).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected the recursion-depth cap to error, got a value")
+	}
+
+	// a normally-nested value still decodes.
+	q2, _ := Parse(`fromjson`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(`[[1,[2,[3]]]]`).Next(); !ok || fmt.Sprint(v2) != "[[1 [2 [3]]]]" {
+		t.Errorf("ordinary fromjson: got %v", v2)
+	}
+}

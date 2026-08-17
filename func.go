@@ -570,7 +570,7 @@ func funcContains(v, x any) any {
 // recurse on nested arrays and objects, so a deeply nested value would overflow
 // the goroutine stack. Past the depth a value already exceeds the limit.
 func containsDepth(v, x any, depth int) any {
-	if MaxAlloc > 0 && int64(depth)*16 > MaxAlloc {
+	if MaxAlloc > 0 && (int64(depth)*16 > MaxAlloc || depth > maxRecursionDepth) {
 		panic(&allocLimitError{})
 	}
 	return binopTypeSwitch(v, x,
@@ -932,7 +932,7 @@ func funcFromJSON(v any) any {
 	if MaxAlloc > 0 {
 		var size int64
 		var err error
-		if w, err = decodeJSONLimited(dec, &size); err != nil {
+		if w, err = decodeJSONLimited(dec, &size, 0); err != nil {
 			if _, ok := err.(*allocLimitError); ok {
 				return err
 			}
@@ -1337,7 +1337,7 @@ func funcFlatten(v any, args []any) (r any) {
 func flatten(xs, vs []any, depth float64, rec int) []any {
 	// bound the Go recursion depth so a deeply nested array cannot overflow the
 	// goroutine stack; a value this deep already exceeds the limit.
-	if MaxAlloc > 0 && int64(rec)*16 > MaxAlloc {
+	if MaxAlloc > 0 && (int64(rec)*16 > MaxAlloc || rec > maxRecursionDepth) {
 		panic(&allocLimitError{})
 	}
 	for _, v := range vs {
@@ -1740,7 +1740,7 @@ func update(v any, path []any, n any, a allocator, size *int64) (any, error) {
 	// path from input, which is not metered, would overflow the goroutine stack on
 	// the way DOWN before any charge fires. The path length is the recursion depth ,
 	// and a path this long builds a structure past the limit ( >= 16 bytes/level ).
-	if MaxAlloc > 0 && int64(len(path))*16 > MaxAlloc {
+	if MaxAlloc > 0 && (int64(len(path))*16 > MaxAlloc || len(path) > maxRecursionDepth) {
 		return nil, &allocLimitError{}
 	}
 	if len(path) == 0 {
@@ -1958,7 +1958,7 @@ func deleteEmpty(v any) any {
 // sibling would overflow the goroutine stack. Past the depth the value already
 // exceeds the limit ; the interpreter's Next recovers the panic.
 func deleteEmptyDepth(v any, depth int) any {
-	if MaxAlloc > 0 && int64(depth)*16 > MaxAlloc {
+	if MaxAlloc > 0 && (int64(depth)*16 > MaxAlloc || depth > maxRecursionDepth) {
 		panic(&allocLimitError{})
 	}
 	switch v := v.(type) {

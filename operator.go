@@ -431,10 +431,13 @@ func funcOpMul(_, l, r any) any {
 
 func deepMergeObjects(l, r map[string]any) any {
 	var size int64
-	return deepMergeObjectsLimited(l, r, &size)
+	return deepMergeObjectsLimited(l, r, &size, 0)
 }
 
-func deepMergeObjectsLimited(l, r map[string]any, size *int64) any {
+func deepMergeObjectsLimited(l, r map[string]any, size *int64, depth int) any {
+	if MaxAlloc > 0 && depth > maxRecursionDepth {
+		return &allocLimitError{}
+	}
 	if *size += int64(len(l)+len(r)) * 24; MaxAlloc > 0 && *size > MaxAlloc {
 		return &allocLimitError{}
 	}
@@ -444,7 +447,7 @@ func deepMergeObjectsLimited(l, r map[string]any, size *int64) any {
 		if mk, ok := m[k]; ok {
 			if mk, ok := mk.(map[string]any); ok {
 				if w, ok := v.(map[string]any); ok {
-					merged := deepMergeObjectsLimited(mk, w, size)
+					merged := deepMergeObjectsLimited(mk, w, size, depth+1)
 					if _, ok := merged.(*allocLimitError); ok {
 						return merged
 					}

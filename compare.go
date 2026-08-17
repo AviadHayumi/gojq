@@ -20,7 +20,7 @@ func Compare(l, r any) int {
 // the comparison operators, etc. Past the depth a value already exceeds the
 // limit, so panic; the interpreter's Next recovers it.
 func compareDepth(l, r any, depth int) int {
-	if MaxAlloc > 0 && int64(depth)*16 > MaxAlloc {
+	if MaxAlloc > 0 && (int64(depth)*16 > MaxAlloc || depth > maxRecursionDepth) {
 		panic(&allocLimitError{})
 	}
 	return binopTypeSwitch(l, r,

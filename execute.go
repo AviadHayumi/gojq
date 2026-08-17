@@ -244,7 +244,7 @@ loop:
 						// recursively the shallow meter cannot see; charge them,
 						// else collecting many deep merges allocates unbounded.
 						// ( 0 for non-map multiply, which keeps allocSize(w). )
-						if s := deepMergeSize(args[0], args[1]); s > 0 {
+						if s := deepMergeSize(args[0], args[1], 0); s > 0 {
 							n = s
 						}
 					}

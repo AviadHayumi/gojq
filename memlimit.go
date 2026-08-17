@@ -16,6 +16,16 @@ func (*allocLimitError) Error() string {
 	return "value allocation exceeds the configured memory limit"
 }
 
+// maxRecursionDepth caps the Go-recursive builtins ( compare, contains, encode,
+// flatten, deleteEmpty, update, deepmerge, and the JSON decoder ) independently
+// of MaxAlloc. Their per-level depth bounds scale with MaxAlloc, so a very large
+// MaxAlloc plus a deeply nested input would let the recursion overflow the
+// goroutine stack ( a fatal, uncatchable crash ). This hard cap converts that
+// into a clean allocation error at any MaxAlloc. At MaxAlloc <= ~4 MiB the
+// per-level bound ( MaxAlloc/16 ) is the binding one, so this never changes
+// behavior there; it only fires far past any depth a real input reaches.
+const maxRecursionDepth = 1 << 19
+
 // allocSize is a cheap, non-recursive estimate of a value's byte size,
 // used only by the allocation meter.
 func allocSize(v any) int64 {
@@ -155,7 +165,10 @@ func spineSize(w, p any) int64 {
 // bounded because the merge already refused ( via its own size counter ) any
 // result larger than MaxAlloc, and it returns 0 for non-map operands ( ordinary
 // numeric / string multiply, charged by allocSize as before ).
-func deepMergeSize(l, r any) int64 {
+func deepMergeSize(l, r any, depth int) int64 {
+	if depth > maxRecursionDepth {
+		return 0
+	}
 	lm, lok := l.(map[string]any)
 	rm, rok := r.(map[string]any)
 	if !lok || !rok {
@@ -165,7 +178,7 @@ func deepMergeSize(l, r any) int64 {
 	for k, rv := range rm {
 		if lv, ok := lm[k].(map[string]any); ok {
 			if _, ok := rv.(map[string]any); ok {
-				n += deepMergeSize(lv, rv)
+				n += deepMergeSize(lv, rv, depth+1)
 			}
 		}
 	}
@@ -213,7 +226,10 @@ func (env *env) overStackLimit() bool {
 // cannot be materialized in one shot before the value meter would see it.
 // Sizes match allocSize: 16 bytes per array slot, 40 per object entry (24 map
 // bucket + a 16-byte string header for the key), plus each value's own footprint.
-func decodeJSONLimited(dec *json.Decoder, size *int64) (any, error) {
+func decodeJSONLimited(dec *json.Decoder, size *int64, depth int) (any, error) {
+	if MaxAlloc > 0 && depth > maxRecursionDepth {
+		return nil, &allocLimitError{}
+	}
 	t, err := dec.Token()
 	if err != nil {
 		return nil, err
@@ -227,7 +243,7 @@ func decodeJSONLimited(dec *json.Decoder, size *int64) (any, error) {
 				if *size += 16; *size > MaxAlloc {
 					return nil, &allocLimitError{}
 				}
-				v, err := decodeJSONLimited(dec, size)
+				v, err := decodeJSONLimited(dec, size, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -246,7 +262,7 @@ func decodeJSONLimited(dec *json.Decoder, size *int64) (any, error) {
 				if *size += int64(len(k)) + 40; *size > MaxAlloc {
 					return nil, &allocLimitError{}
 				}
-				v, err := decodeJSONLimited(dec, size)
+				v, err := decodeJSONLimited(dec, size, depth+1)
 				if err != nil {
 					return nil, err
 				}

@@ -227,7 +227,7 @@ func (e *encoder) encodeArray(vs []any) {
 	// deep-narrow value ( each level adds one byte on the way down ), so a deeply
 	// nested value overflowed the goroutine stack ( a fatal, unrecoverable crash ).
 	// A value this deep is already larger than the limit ( >= 16 bytes per level ).
-	if e.depth++; MaxAlloc > 0 && int64(e.depth)*16 > MaxAlloc {
+	if e.depth++; MaxAlloc > 0 && (int64(e.depth)*16 > MaxAlloc || e.depth > maxRecursionDepth) {
 		panic(&allocLimitError{})
 	}
 	defer func() { e.depth-- }()
@@ -242,7 +242,7 @@ func (e *encoder) encodeArray(vs []any) {
 }
 
 func (e *encoder) encodeObject(vs map[string]any) {
-	if e.depth++; MaxAlloc > 0 && int64(e.depth)*16 > MaxAlloc {
+	if e.depth++; MaxAlloc > 0 && (int64(e.depth)*16 > MaxAlloc || e.depth > maxRecursionDepth) {
 		panic(&allocLimitError{})
 	}
 	defer func() { e.depth-- }()
