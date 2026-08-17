@@ -1057,6 +1057,45 @@ func TestMaxAllocBigToFloatBounded(t *testing.T) {
 	}
 }
 
+// timefmt.Parse reads the whole input and format into runes before matching, so
+// strptime on a big input string ( which fails on extra text anyway ) allocated
+// several times its size: an 8 MB input peaked at 49 MB. A length pre-check now
+// refuses an input or format whose parse could pass MaxAlloc; real date strings
+// are tiny, so only absurd inputs are refused.
+func TestMaxAllocBoundsStrptime(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	big := strings.Repeat("2024", 2000000) // 8 MB
+	for _, tc := range []struct {
+		src string
+		in  any
+	}{
+		{`strptime("%Y")`, big},
+		{`. as $f | "2024" | strptime($f)`, big}, // big format
+	} {
+		query, _ := Parse(tc.src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(tc.in).Next(); !ok {
+			t.Errorf("%q: expected an error, got no result", tc.src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q on a huge input: expected an allocation error, got %v", tc.src, v)
+		}
+	}
+
+	// realistic date strings still parse correctly.
+	for _, tc := range []struct{ src, want string }{
+		{`"2024-01-15" | strptime("%Y-%m-%d") | .[0]`, `2024`},
+		{`"2024-01-15T10:30:00Z" | strptime("%Y-%m-%dT%H:%M:%SZ") | .[2]`, `15`},
+	} {
+		q, _ := Parse(tc.src)
+		c, _ := Compile(q)
+		if v, ok := c.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

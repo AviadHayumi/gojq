@@ -2131,6 +2131,13 @@ func funcStrptime(v, x any) any {
 	if !ok {
 		return &func1TypeError{"strptime", v, x}
 	}
+	// timefmt.Parse reads the whole input and format into runes before matching,
+	// so a huge input ( which almost always fails on extra text anyway ) allocates
+	// several times its size. Reject one whose parse could pass MaxAlloc; real date
+	// strings are tiny, so only absurd inputs are refused.
+	if MaxAlloc > 0 && (int64(len(s))*8 > MaxAlloc || int64(len(format))*8 > MaxAlloc) {
+		return &allocLimitError{}
+	}
 	t, err := timefmt.Parse(s, format)
 	if err != nil {
 		return &func1WrapError{"strptime", v, x, err}
