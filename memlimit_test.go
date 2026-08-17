@@ -330,3 +330,46 @@ func TestMaxAllocAllowsStreaming(t *testing.T) {
 		t.Errorf("collecting 2M elements should error, got %v", v2)
 	}
 }
+
+
+// fromjson yields json.Number values, a distinct type from string. allocSize and
+// the streaming decoder must size them by their digit length, or a JSON document
+// of a few huge numbers slips through the parse bound (each number charged as a
+// 16-byte scalar) and downstream ops run on tens of MB of unmetered data.
+func TestMaxAllocSizesJSONNumbers(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(strings.Repeat("9", 500000)) // a 500,000-digit number
+	}
+	b.WriteString("]")
+
+	query, err := Parse(`fromjson | add | tostring`)
+	if err != nil {
+		t.Fatalf("Parse: %s", err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile: %s", err)
+	}
+	v, ok := code.Run(b.String()).Next()
+	if !ok {
+		t.Fatal("expected an error, got no result")
+	}
+	if _, isAlloc := v.(*allocLimitError); !isAlloc {
+		t.Errorf("fromjson of ~15 MB of numbers should error, got %v", v)
+	}
+
+	// a small number document still decodes and sums correctly.
+	q2, _ := Parse(`fromjson | add`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run("[1,2,3,4]").Next(); !ok || fmt.Sprint(v2) != "10" {
+		t.Errorf("small fromjson: expected 10, got %v", v2)
+	}
+}

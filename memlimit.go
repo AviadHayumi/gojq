@@ -28,6 +28,8 @@ func allocSize(v any) int64 {
 		return int64(len(t))*24 + 16
 	case *big.Int:
 		return int64(len(t.Bits()))*8 + 16
+	case json.Number:
+		return int64(len(t)) + 16 // a numeric string, like string
 	default:
 		// scalars (int, float64, bool, nil) are tiny and transient - they
 		// cannot grow a run out of memory, so the gas meter does not count
@@ -127,7 +129,9 @@ func decodeJSONLimited(dec *json.Decoder, size *int64) (any, error) {
 		}
 	case string:
 		*size += int64(len(t)) + 16
-	default: // json.Number, bool, nil
+	case json.Number:
+		*size += int64(len(t)) + 16
+	default: // bool, nil
 		*size += 16
 	}
 	if *size > MaxAlloc {
