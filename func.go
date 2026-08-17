@@ -330,7 +330,7 @@ func funcLength(v any) any {
 		}
 		return v[1:]
 	case string:
-		return len([]rune(v))
+		return utf8.RuneCountInString(v)
 	case []any:
 		return len(v)
 	case map[string]any:
@@ -796,7 +796,7 @@ func funcExplode(v any) any {
 }
 
 func explode(s string) []any {
-	xs := make([]any, len([]rune(s)))
+	xs := make([]any, utf8.RuneCountInString(s))
 	var i int
 	for _, r := range s {
 		xs[i] = int(r)
@@ -1200,7 +1200,7 @@ func index(vs []any, i int) any {
 }
 
 func indexString(s string, i int) any {
-	l := len([]rune(s))
+	l := utf8.RuneCountInString(s)
 	i = clampIndex(i, -1, l)
 	if 0 <= i && i < l {
 		for _, r := range s {
@@ -1248,7 +1248,7 @@ func slice(vs []any, e, s any) any {
 
 func sliceString(v string, e, s any) any {
 	var start, end int
-	l := len([]rune(v))
+	l := utf8.RuneCountInString(v)
 	if s != nil {
 		if i, ok := toInt(s); ok {
 			start = clampIndex(i, 0, l)
