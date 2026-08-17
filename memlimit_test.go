@@ -1522,3 +1522,42 @@ func TestMaxAllocConcurrentRunsIsolated(t *testing.T) {
 		}
 	}
 }
+
+// Assignment ( |= ) materializes a shared-reference DAG the same way the
+// read-only traversals do ( see TestMaxAllocBoundsDAGTraversal ): de-sharing
+// each branch to update its leaves expands the 2^K logical nodes. The update
+// path also grows an allocator map that records every container it copies, but
+// that map is bounded because each entry is a charge-preceded copy and repeated
+// updates to an already-copied container reuse it in place. So the assignment
+// stops at the limit instead of growing the value or the allocator to OOM.
+func TestMaxAllocBoundsDAGAssignment(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`reduce range(25) as $_ (1; {a: ., b: .}) | (.. | numbers) |= . + 1`,
+		`reduce range(25) as $_ ([0]; [., .]) | (.. | numbers) |= . + 1`,
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		v, ok := code.Run(nil).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isErr := v.(error); !isErr || !strings.Contains(fmt.Sprint(v), "allocation exceeds") {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// an ordinary assignment still works.
+	q2, _ := Parse(`.a.b |= . + 1`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run(map[string]any{"a": map[string]any{"b": 1.0}}).Next(); !ok || fmt.Sprint(v2) != "map[a:map[b:2]]" {
+		t.Errorf("assignment on small value: got %v", v2)
+	}
+}
