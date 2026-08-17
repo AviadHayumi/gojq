@@ -1096,6 +1096,47 @@ func TestMaxAllocBoundsStrptime(t *testing.T) {
 	}
 }
 
+// encode is Go-recursive ( encode -> encodeArray -> encode ) and is NOT covered by
+// the interpreter's overStackLimit ; the buffer guard does not fire on a deep-narrow
+// value ( each level adds one byte on the way down ). A deeply nested value therefore
+// overflowed the goroutine stack in tojson / tostring / @json - a fatal, unrecoverable
+// crash, not a panic. A recursion-depth bound now refuses a value whose nesting alone
+// exceeds the limit ( >= 16 bytes per level ).
+func TestMaxAllocBoundsEncodeDepth(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	var deepArr any = 0.0
+	for i := 0; i < 500000; i++ {
+		deepArr = []any{deepArr}
+	}
+	var deepObj any = 0.0
+	for i := 0; i < 500000; i++ {
+		deepObj = map[string]any{"a": deepObj}
+	}
+	for _, tc := range []struct {
+		src string
+		in  any
+	}{
+		{`tojson`, deepArr}, {`tostring`, deepArr}, {`@json`, deepArr}, {`tojson`, deepObj},
+	} {
+		query, _ := Parse(tc.src)
+		code, _ := Compile(query)
+		if v, ok := code.Run(tc.in).Next(); !ok {
+			t.Errorf("%s on a deep value: expected an error, got no result", tc.src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%s on a deep value: expected an allocation error, got %v", tc.src, v)
+		}
+	}
+
+	// normal nesting still encodes correctly.
+	q, _ := Parse(`tojson`)
+	code, _ := Compile(q)
+	if v, ok := code.Run([]any{[]any{1.0, []any{2.0}}, map[string]any{"a": 3.0}}).Next(); !ok || fmt.Sprint(v) != `[[1,[2]],{"a":3}]` {
+		t.Errorf("tojson of a normal value: got %v", v)
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.

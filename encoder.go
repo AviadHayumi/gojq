@@ -89,7 +89,8 @@ type encoder struct {
 		io.StringWriter
 		Len() int
 	}
-	buf [64]byte
+	buf   [64]byte
+	depth int
 }
 
 func (e *encoder) encode(v any) {
@@ -221,6 +222,15 @@ func (e *encoder) encodeString(s string) {
 }
 
 func (e *encoder) encodeArray(vs []any) {
+	// Bound the recursion depth. encode is Go-recursive and is not covered by
+	// the interpreter's overStackLimit, and the buffer guard does not fire on a
+	// deep-narrow value ( each level adds one byte on the way down ), so a deeply
+	// nested value overflowed the goroutine stack ( a fatal, unrecoverable crash ).
+	// A value this deep is already larger than the limit ( >= 16 bytes per level ).
+	if e.depth++; MaxAlloc > 0 && int64(e.depth)*16 > MaxAlloc {
+		panic(&allocLimitError{})
+	}
+	defer func() { e.depth-- }()
 	e.w.WriteByte('[')
 	for i, v := range vs {
 		if i > 0 {
@@ -232,6 +242,10 @@ func (e *encoder) encodeArray(vs []any) {
 }
 
 func (e *encoder) encodeObject(vs map[string]any) {
+	if e.depth++; MaxAlloc > 0 && int64(e.depth)*16 > MaxAlloc {
+		panic(&allocLimitError{})
+	}
+	defer func() { e.depth-- }()
 	e.w.WriteByte('{')
 	type keyVal struct {
 		key string
