@@ -1735,6 +1735,14 @@ func delpaths(v, p any, a allocator) any {
 }
 
 func update(v any, path []any, n any, a allocator, size *int64) (any, error) {
+	// update recurses once per path element ( updateObject/Index/Slice call back
+	// into update ), and the size counters only charge on the way UP - so a long
+	// path from input, which is not metered, would overflow the goroutine stack on
+	// the way DOWN before any charge fires. The path length is the recursion depth ,
+	// and a path this long builds a structure past the limit ( >= 16 bytes/level ).
+	if MaxAlloc > 0 && int64(len(path))*16 > MaxAlloc {
+		return nil, &allocLimitError{}
+	}
 	if len(path) == 0 {
 		return n, nil
 	}

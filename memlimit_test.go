@@ -1209,6 +1209,50 @@ func TestMaxAllocBoundsDeleteEmpty(t *testing.T) {
 	}
 }
 
+// update recurses once per path element and the round-69 size counters only
+// charge on the way UP, so a long path from input ( which is not metered )
+// overflowed the goroutine stack on the way DOWN before any charge fired. The
+// path length is the recursion depth, so it is now pre-checked at the top of
+// update. getpath is iterative and unaffected.
+func TestMaxAllocBoundsSetpathPathLength(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// a 300k-element path ( > MaxAlloc/16 ) - the recursion would be 300k deep.
+	arrPath := make([]any, 300000)
+	for i := range arrPath {
+		arrPath[i] = float64(0)
+	}
+	objPath := make([]any, 300000)
+	for i := range objPath {
+		objPath[i] = "a"
+	}
+	for _, tc := range []struct {
+		src string
+		p   []any
+	}{
+		{`. as $p | null | setpath($p; 1)`, arrPath},
+		{`. as $p | null | setpath($p; 1)`, objPath},
+		{`. as $p | {a: {a: 1}} | delpaths([$p])`, objPath},
+	} {
+		query, _ := Parse(tc.src)
+		code, _ := Compile(query)
+		// setpath/delpaths wrap the error, so match the message.
+		if v, ok := code.Run(tc.p).Next(); !ok {
+			t.Errorf("%q with a huge path: expected an error, got no result", tc.src)
+		} else if !strings.Contains(fmt.Sprint(v), "allocation exceeds") {
+			t.Errorf("%q with a huge path: expected an allocation error, got %v", tc.src, v)
+		}
+	}
+
+	// normal-length paths still work.
+	q, _ := Parse(`null | setpath(["a", "b"]; 5) | tojson`)
+	code, _ := Compile(q)
+	if v, ok := code.Run(nil).Next(); !ok || fmt.Sprint(v) != `{"a":{"b":5}}` {
+		t.Errorf("setpath: got %v", v)
+	}
+}
+
 // add/flatten/join on a map go through values(), which makes a []any of the
 // map's size; on a big map that make is unmetered, so `add` (result is a number)
 // completed meter-blind. values() must error on a big map, keeping correctness.
