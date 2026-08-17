@@ -848,7 +848,11 @@ func funcASCIIUpcase(v any) any {
 }
 
 func funcToJSON(v any) any {
-	return jsonMarshal(v)
+	s, err := marshalBounded(v)
+	if err != nil {
+		return err
+	}
+	return s
 }
 
 func funcFromJSON(v any) any {
@@ -979,7 +983,11 @@ func formatJoin(typ string, v any, sep string, escape func(string) string) any {
 		case string:
 			ss[i] = escape(v)
 		default:
-			if s := jsonMarshal(v); s != "null" || typ == "sh" {
+			s, err := marshalBounded(v)
+			if err != nil {
+				return err
+			}
+			if s != "null" || typ == "sh" {
 				ss[i] = s
 			}
 		}

@@ -417,3 +417,41 @@ func TestMaxAllocBoundsIndex(t *testing.T) {
 		t.Errorf("small index: expected 6, got %v", v2)
 	}
 }
+
+
+// shared references (`[., .]` repeated) make a value whose own footprint is tiny
+// expand to an exponentially larger JSON encoding. tojson / tostring / @json
+// build the whole string before the meter, which only sees the result, can
+// charge it, so a tiny expression produced gigabytes. the encoder must bound it.
+func TestMaxAllocBoundsEncoding(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`reduce range(30) as $i (0; [., .]) | tojson`,   // O(30) DAG, 2^30 expansion
+		`reduce range(30) as $i (0; [., .]) | tostring`,
+		`reduce range(25) as $i ({}; {a: ., b: .}) | tojson`,
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		v, ok := code.Run(nil).Next()
+		if !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
+			t.Errorf("%q: expected an allocation error, got a value", src)
+		}
+	}
+
+	// ordinary encoding still works.
+	q2, _ := Parse(`tojson`)
+	c2, _ := Compile(q2)
+	if v2, ok := c2.Run([]any{1.0, "x", nil}).Next(); !ok || fmt.Sprint(v2) != `[1,"x",null]` {
+		t.Errorf(`tojson: expected [1,"x",null], got %v`, v2)
+	}
+}

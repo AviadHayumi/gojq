@@ -23,7 +23,16 @@ import (
 // and does not escape '<', '>', '&', '\u2028', and '\u2029'. These behaviors
 // are based on the marshaler of jq command, and different from json.Marshal in
 // the Go standard library. Note that the result is not safe to embed in HTML.
-func Marshal(v any) ([]byte, error) {
+func Marshal(v any) (bs []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(*allocLimitError); ok {
+				bs, err = nil, &allocLimitError{}
+				return
+			}
+			panic(r)
+		}
+	}()
 	var b bytes.Buffer
 	(&encoder{w: &b}).encode(v)
 	return b.Bytes(), nil
@@ -35,6 +44,21 @@ func jsonMarshal(v any) string {
 	return sb.String()
 }
 
+// marshalBounded is jsonMarshal, but returns an allocLimitError instead of
+// building an encoding larger than MaxAlloc (see encode).
+func marshalBounded(v any) (s string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(*allocLimitError); ok {
+				err = &allocLimitError{}
+				return
+			}
+			panic(r)
+		}
+	}()
+	return jsonMarshal(v), nil
+}
+
 func jsonEncodeString(sb *strings.Builder, v string) {
 	(&encoder{w: sb}).encodeString(v)
 }
@@ -44,11 +68,19 @@ type encoder struct {
 		io.Writer
 		io.ByteWriter
 		io.StringWriter
+		Len() int
 	}
 	buf [64]byte
 }
 
 func (e *encoder) encode(v any) {
+	// Shared references (e.g. `[., .]` repeated) make a value whose own
+	// footprint is tiny expand to an exponentially larger encoding. Bound the
+	// output so tojson / tostring / @json cannot build gigabytes before the
+	// value meter, which only sees the finished string, could charge it.
+	if MaxAlloc > 0 && int64(e.w.Len()) > MaxAlloc {
+		panic(&allocLimitError{})
+	}
 	switch v := v.(type) {
 	case nil:
 		e.w.WriteString("null")
