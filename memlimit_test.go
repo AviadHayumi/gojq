@@ -3,6 +3,7 @@ package gojq
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -1451,5 +1452,73 @@ func TestMaxAllocBoundsDAGTraversal(t *testing.T) {
 	c2, _ := Compile(q2)
 	if v2, ok := c2.Run([]any{1.0, 2.0}).Next(); !ok || fmt.Sprint(v2) != "[2 3]" {
 		t.Errorf("walk on small value: got %v", v2)
+	}
+}
+
+// Each run must be independently bounded: env.alloc lives on the per-run env
+// created by newEnv, not on a shared global, and no run mutates state another
+// run can see. Run a memory bomb and a legit query concurrently on shared
+// compiled code and assert every bomb errors and every legit run returns its
+// own correct answer. Under `go test -race` this also guards against a data
+// race on the per-Code regex cache or the package builtin tables.
+func TestMaxAllocConcurrentRunsIsolated(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	bombQ, err := Parse(`[range(100000000)]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bomb, err := Compile(bombQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legitQ, err := Parse(`.a + .b`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legit, err := Compile(legitQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 32
+	var wg sync.WaitGroup
+	bombErrored := make([]bool, n)
+	legitCorrect := make([]bool, n)
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			iter := bomb.Run(nil)
+			for {
+				v, ok := iter.Next()
+				if !ok {
+					break
+				}
+				if _, isErr := v.(error); isErr {
+					bombErrored[i] = true
+					break
+				}
+			}
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			if v, ok := legit.Run(map[string]any{"a": float64(i), "b": 1.0}).Next(); ok {
+				if r, isNum := v.(float64); isNum && r == float64(i)+1 {
+					legitCorrect[i] = true
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if !bombErrored[i] {
+			t.Errorf("run %d: bomb did not error under concurrency", i)
+		}
+		if !legitCorrect[i] {
+			t.Errorf("run %d: legit query returned a wrong or missing result under concurrency", i)
+		}
 	}
 }
