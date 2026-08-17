@@ -29,7 +29,13 @@ func allocSize(v any) int64 {
 	case *big.Int:
 		return int64(len(t.Bits()))*8 + 16
 	default:
-		return 16
+		// scalars (int, float64, bool, nil) are tiny and transient - they
+		// cannot grow a run out of memory, so the gas meter does not count
+		// them. this keeps a streaming query that produces many scalars, such
+		// as `reduce range(N) as $x (0; . + 1)`, from tripping the limit while
+		// holding almost nothing live. retained scalars in an array still cost
+		// their 16-byte slot, charged at opappend.
+		return 0
 	}
 }
 

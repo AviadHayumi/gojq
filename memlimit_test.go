@@ -293,3 +293,40 @@ func TestMaxAllocBoundsGlobalMatch(t *testing.T) {
 		t.Errorf("small match: expected 3 offsets, got %v", v2)
 	}
 }
+
+
+// the gas meter must not count transient scalars: a streaming query that
+// produces millions of numbers but holds one accumulator (a counting reduce)
+// would otherwise trip the limit though it holds almost nothing live. it must
+// complete with the right value, while collecting the same range still errors.
+func TestMaxAllocAllowsStreaming(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	query, err := Parse(`reduce range(2000000) as $x (0; . + 1)`)
+	if err != nil {
+		t.Fatalf("Parse: %s", err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile: %s", err)
+	}
+	v, ok := code.Run(nil).Next()
+	if !ok {
+		t.Fatal("counting reduce: no result")
+	}
+	if e, isErr := v.(error); isErr {
+		t.Fatalf("counting reduce should complete, got error: %s", e)
+	}
+	if got := fmt.Sprint(v); got != "2000000" {
+		t.Errorf("counting reduce: got %v, want 2000000", v)
+	}
+
+	// collecting the same range into an array retains it, so it must still error.
+	q2, _ := Parse(`[range(2000000)] | length`)
+	c2, _ := Compile(q2)
+	v2, _ := c2.Run(nil).Next()
+	if _, isAlloc := v2.(*allocLimitError); !isAlloc {
+		t.Errorf("collecting 2M elements should error, got %v", v2)
+	}
+}
