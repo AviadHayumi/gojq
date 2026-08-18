@@ -239,6 +239,14 @@ loop:
 						// meter cannot see; charge that spine, else collecting
 						// many deep-path setpaths allocates unbounded.
 						n = spineSize(w, args[0])
+					case "delpaths", "_delpaths":
+						// delpaths ( and del, and |= empty ) copies a fresh
+						// spine per deleted path the shallow meter cannot see;
+						// charge those spines from the input, else collecting
+						// many deep-path deletions allocates unbounded.
+						if s := delpathsSize(x, args[0]); s > n {
+							n = s
+						}
 					case "_multiply":
 						// map * map ( deepmerge ) builds fresh merged maps
 						// recursively the shallow meter cannot see; charge them,

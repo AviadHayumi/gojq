@@ -161,6 +161,27 @@ func spineSize(w, p any) int64 {
 	return total
 }
 
+// delpathsSize is the byte size of the fresh spines delpaths copies. For each
+// path it deletes, update copies the containers from the root down to the
+// target, sharing the rest of the input by reference - the same copy-on-write
+// as setpath. The shallow meter charges only the top of the result, so
+// collecting many deep-path deletions ( del(f) over a deep value ) allocated
+// unbounded memory while the meter saw almost nothing. This charges each path's
+// spine from the input value, since the result no longer holds the deleted path.
+// Overlapping paths share a prefix this double-counts, which only over-charges
+// ( safe ), and delete sets are small in practice.
+func delpathsSize(v, p any) int64 {
+	paths, ok := p.([]any)
+	if !ok {
+		return 0
+	}
+	var total int64
+	for _, path := range paths {
+		total += spineSize(v, path)
+	}
+	return total
+}
+
 // deepMergeSize is the byte size of the fresh maps that map * map ( deepmerge )
 // builds. deepMergeObjectsLimited recurses only where both sides hold a map, so
 // it copies a spine of new maps and shares the rest by reference; charging the

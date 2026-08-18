@@ -1709,6 +1709,52 @@ func TestMaxAllocBoundsSetpathSpine(t *testing.T) {
 	}
 }
 
+// delpaths ( and del, and |= empty ) copies a fresh spine per deleted path via
+// the same copy-on-write as setpath, but was not in the deep-charge switch: the
+// run meter saw only the shallow top of the result, so collecting many deep-path
+// deletions of a bound value allocated the copied spines unbounded ( a 1000-deep
+// object deleted in a loop peaked ~75 MB at a 4 MiB limit ). delpathsSize now
+// charges each path's spine from the input, matching what update copies. Both
+// the native "delpaths" and the assignment "_delpaths" opcode are covered.
+func TestMaxAllocBoundsDelpathsSpine(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	for _, src := range []string{
+		`(reduce range(1000) as $i (0; {a: .})) as $x | ([range(1000) | "a"]) as $p | [range(1000000) | ($x | delpaths([$p]))] | length`,
+		`(reduce range(1500) as $i (0; {a: .})) as $x | [range(1000000) | ($x | del(.a.a.a.a.a))] | length`,
+		`(reduce range(1000) as $i (0; {a: .})) as $x | [range(1000000) | ($x | (getpath([range(999) | "a"])) |= empty)] | length`,
+	} {
+		query, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %s", src, err)
+		}
+		code, err := Compile(query)
+		if err != nil {
+			t.Fatalf("Compile(%q): %s", src, err)
+		}
+		if v, ok := code.Run(nil).Next(); !ok {
+			t.Errorf("%q: expected an error, got no result", src)
+		} else if _, isErr := v.(error); !isErr {
+			t.Errorf("%q: expected an allocation error, got %v", src, v)
+		}
+	}
+
+	// ordinary delpaths and del still produce the right value.
+	q4, _ := Parse(`delpaths([["a", "b"], ["c"]])`)
+	c4, _ := Compile(q4)
+	in4 := map[string]any{"a": map[string]any{"b": 1.0}, "c": 2.0, "d": 3.0}
+	if v4, ok := c4.Run(in4).Next(); !ok || fmt.Sprint(v4) != "map[a:map[] d:3]" {
+		t.Errorf("delpaths: got %v", v4)
+	}
+	q5, _ := Parse(`del(.a.b)`)
+	c5, _ := Compile(q5)
+	in5 := map[string]any{"a": map[string]any{"b": 1.0, "c": 2.0}}
+	if v5, ok := c5.Run(in5).Next(); !ok || fmt.Sprint(v5) != "map[a:map[c:2]]" {
+		t.Errorf("del: got %v", v5)
+	}
+}
+
 // map * map ( deepmerge ) recursively builds fresh merged maps via make(), the
 // same shape as setpath: update tracks the merged size in a per-call local
 // counter that bounds a single merge, but the result was charged to the run
