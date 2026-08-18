@@ -1808,6 +1808,24 @@ func TestMaxAllocBoundsDeepmerge(t *testing.T) {
 			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
 		}
 	}
+
+	// a large self-merge has full key overlap, so it builds a union-sized map
+	// ( ~2.5 MB for 55k keys ), not a len(l)+len(r)-sized one. Charging both key
+	// counts double-counted the overlap and falsely rejected it at ~2x the real
+	// size. This must succeed and return the union key count.
+	in := make(map[string]any, 55000)
+	for i := 0; i < 55000; i++ {
+		in[fmt.Sprint(i)] = i
+	}
+	qm, _ := Parse(`. as $o | $o * $o | length`)
+	cm, _ := Compile(qm)
+	if v, ok := cm.Run(in).Next(); !ok {
+		t.Error("large self-merge: got no result")
+	} else if _, isErr := v.(error); isErr {
+		t.Errorf("large self-merge falsely rejected: %v", v)
+	} else if fmt.Sprint(v) != "55000" {
+		t.Errorf("large self-merge: got %v, want 55000", v)
+	}
 }
 
 // The Go-recursive builtins ( compare, encode, contains, flatten, deleteEmpty,

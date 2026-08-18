@@ -218,6 +218,11 @@ func delpathsSize(v, p any) int64 {
 // bounded because the merge already refused ( via its own size counter ) any
 // result larger than MaxAlloc, and it returns 0 for non-map operands ( ordinary
 // numeric / string multiply, charged by allocSize as before ).
+//
+// The merged map holds the UNION of the two key sets ( len(lm) plus the keys
+// only in rm ), so it is charged as such. Charging len(lm)+len(rm) double-counted
+// the shared keys and falsely rejected a large merge whose sides overlap heavily
+// ( a 55k-key self-merge, ~2.5 MB, was rejected at a 4 MiB limit ).
 func deepMergeSize(l, r any, depth int) int64 {
 	if depth > maxRecursionDepth {
 		return 0
@@ -227,11 +232,16 @@ func deepMergeSize(l, r any, depth int) int64 {
 	if !lok || !rok {
 		return 0
 	}
-	n := int64(len(lm)+len(rm))*40 + 320
+	n := int64(len(lm))*40 + 320
 	for k, rv := range rm {
-		if lv, ok := lm[k].(map[string]any); ok {
-			if _, ok := rv.(map[string]any); ok {
-				n += deepMergeSize(lv, rv, depth+1)
+		lv, inL := lm[k]
+		if !inL {
+			n += 40 // a key only in rm adds one entry to the merged map
+			continue
+		}
+		if lvm, ok := lv.(map[string]any); ok {
+			if rvm, ok := rv.(map[string]any); ok {
+				n += deepMergeSize(lvm, rvm, depth+1)
 			}
 		}
 	}
