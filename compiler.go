@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 type compiler struct {
@@ -22,7 +21,7 @@ type compiler struct {
 	builtinScope  *scopeinfo
 	scopes        []*scopeinfo
 	scopecnt      int
-	regexpCache   sync.Map
+	regexpCache   reCache
 }
 
 // Code is a compiled jq query.

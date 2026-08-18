@@ -19,11 +19,24 @@ func (env *env) execute(bc *Code, v any, vars ...any) Iter {
 	return env
 }
 
-func (env *env) Next() (any, bool) {
+func (env *env) Next() (v any, ok bool) {
 	var err error
 	pc, callpc, index := env.pc, len(env.codes)-1, -1
 	backtrack, hasCtx := env.backtrack, env.ctx != context.Background()
-	defer func() { env.pc, env.backtrack = pc, true }()
+	defer func() {
+		env.pc, env.backtrack = pc, true
+		// A few value operations recurse in Go outside the opcode loop and panic
+		// with *allocLimitError when they get too deep or too large (Compare over a
+		// deeply nested value, for one). Recover it here so it surfaces as an error
+		// instead of escaping the run; anything else re-panics.
+		if r := recover(); r != nil {
+			if _, isAlloc := r.(*allocLimitError); !isAlloc {
+				panic(r)
+			}
+			pc, env.forks = len(env.codes), nil
+			v, ok = &allocLimitError{}, true
+		}
+	}()
 loop:
 	for ; pc < len(env.codes); pc++ {
 		env.debugState(pc, backtrack)
@@ -35,6 +48,10 @@ loop:
 				return env.ctx.Err(), true
 			default:
 			}
+		}
+		if MaxAlloc > 0 && env.overStackLimit() {
+			pc, env.forks = len(env.codes), nil
+			return &allocLimitError{}, true
 		}
 		switch code.op {
 		case opnop:
@@ -72,9 +89,18 @@ loop:
 				}
 			}
 			env.push(m)
+			if env.charge(m) {
+				err = &allocLimitError{}
+				break loop
+			}
 		case opappend:
 			i := env.index(code.v.([2]int))
-			env.values[i] = append(env.values[i].([]any), env.pop())
+			x := env.pop()
+			if env.chargeBytes(16 + allocSize(x)) {
+				err = &allocLimitError{}
+				break loop
+			}
+			env.values[i] = append(env.values[i].([]any), x)
 		case opfork:
 			if backtrack {
 				if err != nil {
@@ -188,6 +214,53 @@ loop:
 					break loop
 				}
 				env.push(w)
+				n := allocSize(w)
+				if MaxAlloc > 0 {
+					switch name, _ := v[2].(string); name {
+					case "_match":
+						// _match builds nested capture objects the shallow
+						// meter cannot see; charge their real size, else a
+						// query collecting many matches allocates unbounded
+						// while the meter charges almost nothing.
+						n = matchResultSize(w)
+					case "fromjson":
+						// fromjson decodes a fresh nested tree the shallow
+						// meter cannot see; charge the deep size, else a query
+						// collecting many decodes of a deeply-nested string
+						// allocates unbounded.
+						n = deepSize(w)
+					case "transpose":
+						// transpose builds fresh inner arrays the shallow meter
+						// cannot see; charge their slots, else an N-by-2
+						// transpose collected in a loop allocates unbounded.
+						n = transposeResultSize(w)
+					case "setpath", "_setpath":
+						// setpath ( and |= / = ) copies a fresh spine the shallow
+						// meter cannot see; charge that spine, else collecting
+						// many deep-path setpaths allocates unbounded.
+						n = spineSize(w, args[0])
+					case "delpaths", "_delpaths":
+						// delpaths ( and del, and |= empty ) copies a fresh
+						// spine per deleted path the shallow meter cannot see;
+						// charge those spines from the input, else collecting
+						// many deep-path deletions allocates unbounded.
+						if s := delpathsSize(x, args[0]); s > n {
+							n = s
+						}
+					case "_multiply":
+						// map * map ( deepmerge ) builds fresh merged maps
+						// recursively the shallow meter cannot see; charge them,
+						// else collecting many deep merges allocates unbounded.
+						// ( 0 for non-map multiply, which keeps allocSize(w). )
+						if s := deepMergeSize(args[0], args[1], 0); s > 0 {
+							n = s
+						}
+					}
+				}
+				if env.chargeBytes(n) {
+					err = &allocLimitError{}
+					break loop
+				}
 				if !env.paths.empty() && env.expdepth == 0 {
 					switch v[2].(string) {
 					case "_index":
@@ -276,6 +349,16 @@ loop:
 				if len(v) == 0 {
 					break loop
 				}
+				// .[] materializes a []pathValue of every element ( 32 bytes each )
+				// to drive the iteration. A per-array pre-check bounded one array
+				// but never charged it, so nested iteration of the same large array
+				// ( $a[] as $x | $a[] as $y | ... ) stacked these uncharged and
+				// reached hundreds of MB. Charge it to the run meter so nested and
+				// looped iterations accumulate and trip.
+				if env.chargeBytes(int64(len(v)) * 32) {
+					err = &allocLimitError{}
+					break loop
+				}
 				xs = make([]pathValue, len(v))
 				for i, v := range v {
 					xs[i] = pathValue{path: i, value: v}
@@ -286,6 +369,16 @@ loop:
 					break loop
 				}
 				if len(v) == 0 {
+					break loop
+				}
+				// .[] materializes a []pathValue of every element ( 32 bytes each )
+				// to drive the iteration. A per-array pre-check bounded one array
+				// but never charged it, so nested iteration of the same large array
+				// ( $a[] as $x | $a[] as $y | ... ) stacked these uncharged and
+				// reached hundreds of MB. Charge it to the run meter so nested and
+				// looped iterations accumulate and trip.
+				if env.chargeBytes(int64(len(v)) * 32) {
+					err = &allocLimitError{}
 					break loop
 				}
 				xs = make([]pathValue, len(v))
