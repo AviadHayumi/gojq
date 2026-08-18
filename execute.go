@@ -349,7 +349,13 @@ loop:
 				if len(v) == 0 {
 					break loop
 				}
-				if MaxAlloc > 0 && int64(len(v))*32 > MaxAlloc {
+				// .[] materializes a []pathValue of every element ( 32 bytes each )
+				// to drive the iteration. A per-array pre-check bounded one array
+				// but never charged it, so nested iteration of the same large array
+				// ( $a[] as $x | $a[] as $y | ... ) stacked these uncharged and
+				// reached hundreds of MB. Charge it to the run meter so nested and
+				// looped iterations accumulate and trip.
+				if env.chargeBytes(int64(len(v)) * 32) {
 					err = &allocLimitError{}
 					break loop
 				}
@@ -365,7 +371,13 @@ loop:
 				if len(v) == 0 {
 					break loop
 				}
-				if MaxAlloc > 0 && int64(len(v))*32 > MaxAlloc {
+				// .[] materializes a []pathValue of every element ( 32 bytes each )
+				// to drive the iteration. A per-array pre-check bounded one array
+				// but never charged it, so nested iteration of the same large array
+				// ( $a[] as $x | $a[] as $y | ... ) stacked these uncharged and
+				// reached hundreds of MB. Charge it to the run meter so nested and
+				// looped iterations accumulate and trip.
+				if env.chargeBytes(int64(len(v)) * 32) {
 					err = &allocLimitError{}
 					break loop
 				}

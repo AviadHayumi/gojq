@@ -1828,6 +1828,49 @@ func TestMaxAllocBoundsDeepmerge(t *testing.T) {
 	}
 }
 
+// .[] materializes a []pathValue of every element to drive the iteration. That
+// slice was pre-checked per array but never charged to the run meter, so nested
+// iteration of the same large array ( $a[] as $x | $a[] as $y | ... ) stacked
+// the uncharged slices and reached hundreds of MB while the meter saw nothing.
+// The iteration is now charged, so nested / looped iterations accumulate and trip.
+func TestMaxAllocBoundsIterPathValues(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	// five nested iterations of a 50k-element array: each materializes a 1.6 MB
+	// []pathValue, ~8 MB total, which must now trip. limit(1) keeps it from being
+	// a CPU bomb - the slices are materialized on entry, before any deep looping.
+	src := "[range(50000)] as $a | [limit(1; $a[] as $x0 | $a[] as $x1 | $a[] as $x2 | $a[] as $x3 | $a[] as $x4 | 1)] | length"
+	query, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := code.Run(nil).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected an allocation error for nested iteration, got %v", v)
+	}
+
+	// a single scan of a large array is unchanged ( one []pathValue, under the
+	// limit ), and small / nested iteration of small arrays must still work.
+	for _, tc := range []struct{ src, want string }{
+		{`[range(1000)] | any(. > 998)`, "true"},
+		{`[[1, 2], [3, 4]] | [.[] | .[]] | add`, "10"},
+		{`[range(100000)] | length`, "100000"},
+		{"[range(1000)] as $a | [limit(1; $a[] as $y0 | $a[] as $y1 | $a[] as $y2 | 1)] | length", "1"},
+	} {
+		q, _ := Parse(tc.src)
+		c, _ := Compile(q)
+		if v, ok := c.Run(nil).Next(); !ok || fmt.Sprint(v) != tc.want {
+			t.Errorf("%q: got %v, want %s", tc.src, v, tc.want)
+		}
+	}
+}
+
 // The Go-recursive builtins ( compare, encode, contains, flatten, deleteEmpty,
 // update, deepmerge, and the JSON decoder ) bound recursion depth by MaxAlloc,
 // which at a large MaxAlloc would let a deeply-nested input overflow the
