@@ -35,7 +35,12 @@ func allocSize(v any) int64 {
 	case []any:
 		return int64(len(t))*16 + 16
 	case map[string]any:
-		return int64(len(t))*24 + 16
+		// A Go map has a ~320-byte minimum ( hmap header + a full first
+		// bucket ) that len*24 missed entirely, so a chain or collection of
+		// tiny 1-key maps ran ~6x over the limit. Charge that base plus ~40
+		// per entry ( bucket slot + copied key header ); key string content is
+		// still charged separately where the key is built.
+		return int64(len(t))*40 + 320
 	case *big.Int:
 		return int64(len(t.Bits()))*8 + 16
 	case json.Number:
@@ -174,7 +179,7 @@ func deepMergeSize(l, r any, depth int) int64 {
 	if !lok || !rok {
 		return 0
 	}
-	n := int64(len(lm)+len(rm))*24 + 16
+	n := int64(len(lm)+len(rm))*40 + 320
 	for k, rv := range rm {
 		if lv, ok := lm[k].(map[string]any); ok {
 			if _, ok := rv.(map[string]any); ok {

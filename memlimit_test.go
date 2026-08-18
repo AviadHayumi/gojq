@@ -1776,3 +1776,36 @@ func TestMaxAllocCapsRecursionDepth(t *testing.T) {
 		t.Errorf("ordinary fromjson: got %v", v2)
 	}
 }
+
+// A Go map[string]any has a ~320-byte fixed minimum ( hmap header + a full first
+// bucket ) that allocSize's old len*24+16 missed, so a chain or collection of
+// tiny 1-key maps ran several times over the limit ( a 1M-deep 1-key chain
+// peaked ~27 MB at a 4 MiB limit ). allocSize now charges that base. This 30000-
+// deep 1-key chain is ~11 MB of real maps but was charged under 2 MB before.
+func TestMaxAllocChargesMapBase(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 4 << 20
+
+	src := `reduce range(30000) as $i (0; {($i | tostring): .})`
+	query, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := code.Run(nil).Next(); !ok {
+		t.Fatal("expected a result")
+	} else if _, isErr := v.(error); !isErr {
+		t.Errorf("expected the map-base charge to error on a deep 1-key chain, got a value")
+	}
+
+	// an ordinary small object is still fine.
+	q2, _ := Parse(`{a: .x, b: .y, c: .z}`)
+	c2, _ := Compile(q2)
+	in := map[string]any{"x": 1.0, "y": 2.0, "z": 3.0}
+	if v2, ok := c2.Run(in).Next(); !ok || fmt.Sprint(v2) != "map[a:1 b:2 c:3]" {
+		t.Errorf("small object: got %v", v2)
+	}
+}
