@@ -3,6 +3,7 @@ package gojq
 import (
 	"encoding/json"
 	"math/big"
+	"reflect"
 )
 
 // MaxAlloc bounds the total number of bytes a single query execution may
@@ -161,23 +162,49 @@ func spineSize(w, p any) int64 {
 	return total
 }
 
-// delpathsSize is the byte size of the fresh spines delpaths copies. For each
-// path it deletes, update copies the containers from the root down to the
-// target, sharing the rest of the input by reference - the same copy-on-write
-// as setpath. The shallow meter charges only the top of the result, so
-// collecting many deep-path deletions ( del(f) over a deep value ) allocated
-// unbounded memory while the meter saw almost nothing. This charges each path's
-// spine from the input value, since the result no longer holds the deleted path.
-// Overlapping paths share a prefix this double-counts, which only over-charges
-// ( safe ), and delete sets are small in practice.
+// delpathsSize is the byte size of the fresh spines delpaths copies. delpaths
+// copies each container from the root down to a deleted path, sharing the rest
+// of the input by reference - the same copy-on-write as setpath. The shallow
+// meter charges only the top of the result, so collecting many deep-path
+// deletions ( del(f) over a deep value ) allocated unbounded memory while the
+// meter saw almost nothing. It charges the spines from the input, since the
+// result no longer holds the deleted paths.
+//
+// delpaths shares one allocator across all its paths, so it copies each
+// container at most once; this charges the UNION of the path spines, deduping
+// containers by identity the same way the allocator does. Summing each path's
+// spine separately would be quadratic for a wide sibling delete like del(.[])
+// ( every path starts at the same root ) and would falsely reject it.
 func delpathsSize(v, p any) int64 {
 	paths, ok := p.([]any)
 	if !ok {
 		return 0
 	}
+	seen := map[uintptr]struct{}{}
 	var total int64
-	for _, path := range paths {
-		total += spineSize(v, path)
+	for _, q := range paths {
+		path, ok := q.([]any)
+		if !ok {
+			continue
+		}
+		cur := v
+	walk:
+		for _, k := range path {
+			switch cur.(type) {
+			case []any, map[string]any:
+				addr := reflect.ValueOf(cur).Pointer()
+				if _, ok := seen[addr]; !ok {
+					seen[addr] = struct{}{}
+					total += allocSize(cur)
+				}
+			default:
+				break walk
+			}
+			cur = funcIndex2(nil, cur, k)
+			if _, isErr := cur.(error); isErr {
+				break walk
+			}
+		}
 	}
 	return total
 }

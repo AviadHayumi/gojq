@@ -1753,6 +1753,22 @@ func TestMaxAllocBoundsDelpathsSpine(t *testing.T) {
 	if v5, ok := c5.Run(in5).Next(); !ok || fmt.Sprint(v5) != "map[a:map[c:2]]" {
 		t.Errorf("del: got %v", v5)
 	}
+
+	// a wide sibling delete ( del(.[]) ) has every path share the one root, which
+	// the allocator copies once. Charging each path's spine separately would be
+	// quadratic and would falsely reject this legitimate small-result delete, so
+	// delpathsSize charges the union of the spines. This must succeed and give [].
+	q6, _ := Parse(`del(.[])`)
+	c6, _ := Compile(q6)
+	in6 := make([]any, 5000)
+	for i := range in6 {
+		in6[i] = i
+	}
+	if v6, ok := c6.Run(in6).Next(); !ok {
+		t.Error("del(.[]) on a wide array: got no result")
+	} else if arr, isArr := v6.([]any); !isArr || len(arr) != 0 {
+		t.Errorf("del(.[]) on a wide array: got %v, want []", v6)
+	}
 }
 
 // map * map ( deepmerge ) recursively builds fresh merged maps via make(), the
