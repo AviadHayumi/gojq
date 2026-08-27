@@ -810,6 +810,14 @@ func funcImplode(v any) any {
 	if !ok {
 		return &func0TypeError{"implode", v}
 	}
+	// The input array remains live while strings.Builder validates and encodes
+	// every interface value. Builder growth can temporarily retain old and new
+	// backing buffers, and each rune can occupy four output bytes. Cap that whole
+	// decode/encode working set before starting it; the returned string is still
+	// charged normally by the opcode meter.
+	if implodeWorkingSetTooLarge(len(vs)) {
+		return &allocLimitError{}
+	}
 	var sb strings.Builder
 	// Grow is only a capacity hint; cap it at the limit so a huge input array
 	// cannot force an upfront allocation past MaxAlloc before the per-rune check
@@ -1455,7 +1463,10 @@ func sortItems(name string, v, x any) ([]*sortItem, error) {
 	if len(vs) != len(xs) {
 		return nil, &func1WrapError{name, v, x, &lengthMismatchError{}}
 	}
-	if arrayTooLarge(len(vs)) {
+	// Sorting holds an 8-byte pointer slice plus one 32-byte sortItem per input
+	// and then a 16-byte result slot per input. Preflight the unavoidable peak so
+	// a single call cannot allocate past MaxAlloc before its result is charged.
+	if MaxAlloc > 0 && int64(len(vs)) > MaxAlloc/56 {
 		return nil, &allocLimitError{}
 	}
 	items := make([]*sortItem, len(vs))
@@ -2440,18 +2451,33 @@ func bigToFloat(x *big.Int) float64 {
 }
 
 func parseNumber(v json.Number) any {
-	if i, err := v.Int64(); err == nil && math.MinInt <= i && i <= math.MaxInt {
-		return int(i)
+	s := v.String()
+	if len(s) <= 20 {
+		if i, err := v.Int64(); err == nil && math.MinInt <= i && i <= math.MaxInt {
+			return int(i)
+		}
 	}
-	if strings.ContainsAny(v.String(), ".eE") {
+	// Decimal conversion uses superlinear scratch inside math/big. Mirror the
+	// encoder's 384-bytes-per-word safety factor in the reverse direction and
+	// reject by O(1) digit count before SetString starts work. Counting a sign or
+	// decimal syntax byte as a digit is deliberately conservative for absurdly
+	// large numbers and avoids a linear pre-scan on the attack path.
+	if MaxAlloc > 0 && len(s) > 20 {
+		digits := int64(len(s))
+		words := (digits + 18) / 19 // at most 19 decimal digits per 64-bit word
+		if words > MaxAlloc/384 {
+			panic(&allocLimitError{})
+		}
+	}
+	if strings.ContainsAny(s, ".eE") {
 		if f, err := v.Float64(); err == nil {
 			return f
 		}
 	}
-	if bi, ok := new(big.Int).SetString(v.String(), 10); ok {
+	if bi, ok := new(big.Int).SetString(s, 10); ok {
 		return bi
 	}
-	if strings.HasPrefix(v.String(), "-") {
+	if strings.HasPrefix(s, "-") {
 		return math.Inf(-1)
 	}
 	return math.Inf(1)

@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+type freshNestedIter struct {
+	remaining int
+}
+
+func (iter *freshNestedIter) Next() (any, bool) {
+	if iter.remaining == 0 {
+		return nil, false
+	}
+	iter.remaining--
+	return []any{make([]any, 2000)}, true
+}
+
 // with MaxAlloc set, a memory bomb must error instead of allocating unboundedly.
 func TestMaxAllocStopsBombs(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
@@ -106,6 +118,79 @@ func TestMaxAllocStopsSingleShotBuiltins(t *testing.T) {
 	}
 }
 
+// Every native callback result goes through the VM's ownership-aware result
+// meter, including callbacks added in the future and custom callbacks unknown
+// to the builtin-name switch. A shallow-only meter sees just the one-element
+// outer array below and misses the fresh 2,000-slot child on every call.
+func TestMaxAllocMetersEveryNativeReturn(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 1 << 20 // 1 MiB
+
+	query, err := Parse(`[range(1000) | fresh_nested] | length`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query, WithFunction("fresh_nested", 0, 0, func(any, []any) any {
+		return []any{make([]any, 2000)}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := code.Run(nil).Next()
+	if !ok {
+		t.Fatal("expected an allocation error, got no result")
+	}
+	if _, isAlloc := v.(*allocLimitError); !isAlloc {
+		t.Errorf("expected *allocLimitError for an unknown nested producer, got %v", v)
+	}
+
+	iterQuery, err := Parse(`[fresh_nested_iter] | length`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iterCode, err := Compile(iterQuery, WithIterFunction("fresh_nested_iter", 0, 0, func(any, []any) Iter {
+		return &freshNestedIter{remaining: 1000}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok = iterCode.Run(nil).Next()
+	if !ok {
+		t.Fatal("expected an iterator allocation error, got no result")
+	}
+	if _, isAlloc := v.(*allocLimitError); !isAlloc {
+		t.Errorf("expected *allocLimitError for an unknown iterator producer, got %v", v)
+	}
+}
+
+// Values pulled from input(s) belong to the caller, like the root value passed
+// to Run, and must not consume the query's allocation budget merely by crossing
+// the native-call return boundary.
+func TestMaxAllocLeavesPulledInputFree(t *testing.T) {
+	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
+	MaxAlloc = 1 << 20 // 1 MiB
+
+	pulled := make([]any, 100000) // larger than MaxAlloc by allocSize
+	query, err := Parse(`input`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Compile(query, WithInputIter(NewIter(pulled)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := code.Run(nil).Next()
+	if !ok {
+		t.Fatal("expected the pulled input")
+	}
+	if _, isErr := v.(error); isErr {
+		t.Fatalf("pulled input was charged as query output: %v", v)
+	}
+	if got, isArray := v.([]any); !isArray || len(got) != len(pulled) {
+		t.Fatalf("unexpected pulled input: %T len=%d", v, len(got))
+	}
+}
+
 // deep or infinite recursion grows the interpreter's own stacks (operands,
 // forks, scopes) without ever completing a value, so the value meter never
 // charges it. and a big.Int can grow past the value meter because its size is
@@ -136,6 +221,12 @@ func TestMaxAllocStopsRecursionAndBigint(t *testing.T) {
 		v, ok := code.Run(c.in).Next()
 		if !ok {
 			t.Errorf("%q: expected an error, got no result", c.src)
+		} else if c.src == `def f: [f]; f` {
+			switch v.(type) {
+			case *stackLimitError, *allocLimitError:
+			default:
+				t.Errorf("%q: expected a stack or allocation limit error, got %v", c.src, v)
+			}
 		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
 			t.Errorf("%q: expected *allocLimitError, got %v", c.src, v)
 		}
@@ -223,8 +314,12 @@ func TestMaxAllocStopsValueSlotGrowth(t *testing.T) {
 		v, ok := code.Run("x").Next()
 		if !ok {
 			t.Errorf("expected an error, got no result")
-		} else if _, isAlloc := v.(*allocLimitError); !isAlloc {
-			t.Errorf("expected *allocLimitError, got %v", v)
+		} else {
+			switch v.(type) {
+			case *stackLimitError, *allocLimitError:
+			default:
+				t.Errorf("expected a stack or allocation limit error, got %v", v)
+			}
 		}
 	}
 }
@@ -1567,7 +1662,7 @@ func TestMaxAllocBoundsDAGAssignment(t *testing.T) {
 // top-level match map ( ~112 bytes ) while the object holds one capture map per
 // group. A query collecting many matches, each with many capture groups,
 // allocated hundreds of MB ( a short regex reached ~950 MB ) while the meter saw
-// almost nothing. matchResultSize now charges the captures' real size.
+// almost nothing. The universal native-result meter charges their real size.
 func TestMaxAllocBoundsMatchCaptures(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
 	MaxAlloc = 4 << 20
@@ -1601,7 +1696,7 @@ func TestMaxAllocBoundsMatchCaptures(t *testing.T) {
 // decode, but the result was otherwise charged at its top level only, so a
 // query collecting many decodes of a deeply-nested JSON string ( a ~40 KB
 // string reached ~3.7 GB ) allocated unbounded while the meter saw ~16 bytes
-// per decode. deepSize now charges the whole decoded tree at the native result.
+// per decode. The universal native-result meter charges the whole decoded tree.
 func TestMaxAllocBoundsFromjsonCollection(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
 	MaxAlloc = 4 << 20
@@ -1634,8 +1729,8 @@ func TestMaxAllocBoundsFromjsonCollection(t *testing.T) {
 // transpose builds a fresh outer array of inner arrays whose elements are refs
 // into the input. The shallow meter charged only the outer array, so an N-by-2
 // transpose ( two wide inner arrays ) collected in a loop reached ~2.2 GB while
-// the meter saw ~48 bytes per result. transposeResultSize now charges the inner
-// arrays' slots. ( Round 120 missed this: it tested the 2-by-N orientation,
+// the meter saw ~48 bytes per result. The universal native-result meter charges
+// the inner arrays' slots. ( Round 120 missed this: it tested the 2-by-N orientation,
 // which is many NARROW inner arrays and stays bounded. )
 func TestMaxAllocBoundsTransposeCollection(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
@@ -1670,7 +1765,7 @@ func TestMaxAllocBoundsTransposeCollection(t *testing.T) {
 // to the target and shares the rest of the input by reference. The shallow
 // meter charged only the top of the result, so a deep-path setpath collected in
 // a loop ( a 1000-deep path reached ~2 GB ) allocated the spine unbounded.
-// spineSize now charges the copied spine, while leaving a shallow assignment
+// The universal native-result meter charges the copied spine, while leaving a shallow assignment
 // charged as before ( its spine is just the top ).
 func TestMaxAllocBoundsSetpathSpine(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
@@ -1713,8 +1808,8 @@ func TestMaxAllocBoundsSetpathSpine(t *testing.T) {
 // the same copy-on-write as setpath, but was not in the deep-charge switch: the
 // run meter saw only the shallow top of the result, so collecting many deep-path
 // deletions of a bound value allocated the copied spines unbounded ( a 1000-deep
-// object deleted in a loop peaked ~75 MB at a 4 MiB limit ). delpathsSize now
-// charges each path's spine from the input, matching what update copies. Both
+// object deleted in a loop peaked ~75 MB at a 4 MiB limit ). The universal
+// native-result meter charges every copied spine by identity. Both
 // the native "delpaths" and the assignment "_delpaths" opcode are covered.
 func TestMaxAllocBoundsDelpathsSpine(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
@@ -1757,7 +1852,7 @@ func TestMaxAllocBoundsDelpathsSpine(t *testing.T) {
 	// a wide sibling delete ( del(.[]) ) has every path share the one root, which
 	// the allocator copies once. Charging each path's spine separately would be
 	// quadratic and would falsely reject this legitimate small-result delete, so
-	// delpathsSize charges the union of the spines. This must succeed and give [].
+	// the result meter charges the union of the spines. This must succeed and give [].
 	q6, _ := Parse(`del(.[])`)
 	c6, _ := Compile(q6)
 	in6 := make([]any, 5000)
@@ -1776,7 +1871,7 @@ func TestMaxAllocBoundsDelpathsSpine(t *testing.T) {
 // counter that bounds a single merge, but the result was charged to the run
 // meter only at its top level. A deep-object self-merge collected in a loop
 // ( a 1000-deep object reached ~7 GB ) allocated the merged maps unbounded.
-// deepMergeSize now charges them by walking the same overlap the merge does.
+// The universal native-result meter charges every fresh merged-map spine.
 func TestMaxAllocBoundsDeepmerge(t *testing.T) {
 	defer func(o int64) { MaxAlloc = o }(MaxAlloc)
 	MaxAlloc = 4 << 20

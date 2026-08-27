@@ -57,195 +57,119 @@ func allocSize(v any) int64 {
 	}
 }
 
-// matchResultSize is the deep byte size of a _match result: an array of match
-// objects, each holding a captures array of capture objects. allocSize is
-// shallow, so without accounting for the nested captures a query that collects
-// many matches ( each with many capture groups ) allocates far past MaxAlloc
-// while the meter, seeing only the top-level array, charges almost nothing. The
-// shape is fixed ( array -> match map -> captures array -> capture map ), so
-// this is a bounded walk, not open recursion.
-func matchResultSize(w any) int64 {
-	res, ok := w.([]any)
-	if !ok {
-		return allocSize(w)
+// chargeFreshResult charges all storage a native callback freshly allocated for
+// result. Containers reachable from input or args are borrowed by identity and
+// pruned, so copy-on-write spines are charged while their shared branches remain
+// free. The iterative walk handles arbitrary depth and shared-reference DAGs;
+// every native callback, including future and custom callbacks, inherits it at
+// the single opcall return boundary.
+func (env *env) chargeFreshResult(result, input any, args []any) bool {
+	if MaxAlloc <= 0 {
+		return false
 	}
-	n := allocSize(res)
-	for _, m := range res {
-		mm, ok := m.(map[string]any)
-		if !ok {
-			n += allocSize(m)
-			continue
+	switch result.(type) {
+	case []any, map[string]any:
+		// Compound results need the ownership walk below.
+	default:
+		// Scalars cost zero; strings, numbers, and big integers are shallow
+		// leaves. Keep this common path allocation-free.
+		return env.charge(result)
+	}
+	// An allocator-backed update can return the same container it received and
+	// mutate below that root. Avoid an O(size(input)) seed on every such update,
+	// but retain the old shallow charge rather than treating the alias as free.
+	if addr, _ := containerAddr(result); addr != 0 {
+		if inputAddr, _ := containerAddr(input); addr == inputAddr {
+			return env.charge(result)
 		}
-		n += allocSize(mm)
-		if caps, ok := mm["captures"].([]any); ok {
-			n += allocSize(caps)
-			for _, c := range caps {
-				n += allocSize(c)
+		for _, arg := range args {
+			if argAddr, _ := containerAddr(arg); addr == argAddr {
+				return env.charge(result)
 			}
 		}
 	}
-	return n
+	seen := map[uintptr]struct{}{}
+	markContainers(input, seen)
+	for _, arg := range args {
+		markContainers(arg, seen)
+	}
+	stack := []any{result}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		switch x := x.(type) {
+		case []any:
+			addr := reflect.ValueOf(x).Pointer()
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
+			if env.chargeBytes(allocSize(x)) {
+				return true
+			}
+			stack = append(stack, x...)
+		case map[string]any:
+			addr := reflect.ValueOf(x).Pointer()
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
+			if env.chargeBytes(allocSize(x)) {
+				return true
+			}
+			for key, value := range x {
+				if env.chargeBytes(int64(len(key)) + 16) {
+					return true
+				}
+				stack = append(stack, value)
+			}
+		default:
+			if env.charge(x) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// deepSize is the total byte size of a value including everything nested. It is
-// used to charge builtins that return a freshly decoded tree the shallow meter
-// cannot see ( fromjson ): decodeJSONLimited bounds a single decode, but the
-// result is otherwise charged only at its top level, so collecting many decodes
-// of a deeply-nested string allocated gigabytes while the meter saw almost
-// nothing. It walks iteratively so an arbitrarily deep result cannot overflow
-// the goroutine stack, and must only be called on trees ( no shared references,
-// which a JSON decode never produces ), else a shared node is counted per path.
-func deepSize(v any) int64 {
-	var total int64
+func containerAddr(v any) (uintptr, bool) {
+	switch v := v.(type) {
+	case []any:
+		return reflect.ValueOf(v).Pointer(), true
+	case map[string]any:
+		return reflect.ValueOf(v).Pointer(), true
+	default:
+		return 0, false
+	}
+}
+
+// markContainers records all container identities reachable from v. A result
+// node with one of these identities existed before the callback, so its whole
+// subtree is shared input rather than newly allocated output.
+func markContainers(v any, seen map[uintptr]struct{}) {
 	stack := []any{v}
 	for len(stack) > 0 {
 		x := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		total += allocSize(x)
 		switch x := x.(type) {
 		case []any:
+			addr := reflect.ValueOf(x).Pointer()
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
 			stack = append(stack, x...)
 		case map[string]any:
-			for key, val := range x {
-				total += int64(len(key)) + 16 // key string copied into the object
-				stack = append(stack, val)
+			addr := reflect.ValueOf(x).Pointer()
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
+			for _, value := range x {
+				stack = append(stack, value)
 			}
 		}
 	}
-	return total
-}
-
-// transposeResultSize is the byte size of a transpose result: an outer array of
-// freshly-made inner arrays whose elements are references into the input. The
-// shallow meter charges only the outer array, so an N-by-2 transpose ( two wide
-// inner arrays ) collected in a loop allocated hundreds of MB while the meter
-// saw ~48 bytes each. This charges the inner arrays' slots too, but stops at the
-// elements ( they are refs, and recursing could revisit a shared sub-value ).
-func transposeResultSize(w any) int64 {
-	outer, ok := w.([]any)
-	if !ok {
-		return allocSize(w)
-	}
-	n := allocSize(outer)
-	for _, inner := range outer {
-		n += allocSize(inner)
-	}
-	return n
-}
-
-// spineSize is the byte size of the fresh spine setpath copies: the containers
-// from the root down to the target along the path. setpath ( and |= / = ) copy
-// only this spine and share the rest of the input by reference, so charging the
-// whole result ( deepSize ) would over-count the shared branches and reject
-// legitimate multi-assignments; charging only the top ( allocSize ) misses the
-// deep spine, so collecting many deep-path setpaths allocated GB. Walking one
-// path is DAG-safe ( no branching ) and matches what update actually allocates.
-func spineSize(w, p any) int64 {
-	path, ok := p.([]any)
-	if !ok {
-		return allocSize(w)
-	}
-	var total int64
-	cur := w
-	for _, k := range path {
-		switch cur.(type) {
-		case []any, map[string]any:
-			total += allocSize(cur)
-		default:
-			return total
-		}
-		cur = funcIndex2(nil, cur, k)
-		if _, isErr := cur.(error); isErr {
-			return total
-		}
-	}
-	return total
-}
-
-// delpathsSize is the byte size of the fresh spines delpaths copies. delpaths
-// copies each container from the root down to a deleted path, sharing the rest
-// of the input by reference - the same copy-on-write as setpath. The shallow
-// meter charges only the top of the result, so collecting many deep-path
-// deletions ( del(f) over a deep value ) allocated unbounded memory while the
-// meter saw almost nothing. It charges the spines from the input, since the
-// result no longer holds the deleted paths.
-//
-// delpaths shares one allocator across all its paths, so it copies each
-// container at most once; this charges the UNION of the path spines, deduping
-// containers by identity the same way the allocator does. Summing each path's
-// spine separately would be quadratic for a wide sibling delete like del(.[])
-// ( every path starts at the same root ) and would falsely reject it.
-func delpathsSize(v, p any) int64 {
-	paths, ok := p.([]any)
-	if !ok {
-		return 0
-	}
-	seen := map[uintptr]struct{}{}
-	var total int64
-	for _, q := range paths {
-		path, ok := q.([]any)
-		if !ok {
-			continue
-		}
-		cur := v
-	walk:
-		for _, k := range path {
-			switch cur.(type) {
-			case []any, map[string]any:
-				addr := reflect.ValueOf(cur).Pointer()
-				if _, ok := seen[addr]; !ok {
-					seen[addr] = struct{}{}
-					total += allocSize(cur)
-				}
-			default:
-				break walk
-			}
-			cur = funcIndex2(nil, cur, k)
-			if _, isErr := cur.(error); isErr {
-				break walk
-			}
-		}
-	}
-	return total
-}
-
-// deepMergeSize is the byte size of the fresh maps that map * map ( deepmerge )
-// builds. deepMergeObjectsLimited recurses only where both sides hold a map, so
-// it copies a spine of new maps and shares the rest by reference; charging the
-// whole result would over-count the shared branches, and charging only the top
-// misses the recursion, so collecting many deep merges allocated GB. This walks
-// the same overlap the merge does, so it charges exactly the new maps. It is
-// bounded because the merge already refused ( via its own size counter ) any
-// result larger than MaxAlloc, and it returns 0 for non-map operands ( ordinary
-// numeric / string multiply, charged by allocSize as before ).
-//
-// The merged map holds the UNION of the two key sets ( len(lm) plus the keys
-// only in rm ), so it is charged as such. Charging len(lm)+len(rm) double-counted
-// the shared keys and falsely rejected a large merge whose sides overlap heavily
-// ( a 55k-key self-merge, ~2.5 MB, was rejected at a 4 MiB limit ).
-func deepMergeSize(l, r any, depth int) int64 {
-	if depth > maxRecursionDepth {
-		return 0
-	}
-	lm, lok := l.(map[string]any)
-	rm, rok := r.(map[string]any)
-	if !lok || !rok {
-		return 0
-	}
-	n := int64(len(lm))*40 + 320
-	for k, rv := range rm {
-		lv, inL := lm[k]
-		if !inL {
-			n += 40 // a key only in rm adds one entry to the merged map
-			continue
-		}
-		if lvm, ok := lv.(map[string]any); ok {
-			if rvm, ok := rv.(map[string]any); ok {
-				n += deepMergeSize(lvm, rvm, depth+1)
-			}
-		}
-	}
-	return n
 }
 
 // chargeBytes adds n to the running total and reports whether the limit has
@@ -270,6 +194,24 @@ func arrayTooLarge(n int) bool {
 	return MaxAlloc > 0 && int64(n)*16 > MaxAlloc
 }
 
+// arrayAppendTooLarge reports whether growing a []any to n elements can exceed
+// MaxAlloc while append temporarily retains both its old and new backing arrays.
+// For large slices Go grows capacity by about 25%, so the old n-slot backing
+// array and new ~1.25n-slot array need about 36 bytes per eventual element at
+// the growth point. Single-shot makes use arrayTooLarge because they do not have
+// an old backing array.
+func arrayAppendTooLarge(n int) bool {
+	return MaxAlloc > 0 && int64(n) > MaxAlloc/36
+}
+
+// implodeWorkingSetTooLarge bounds the live input array plus the old and new
+// UTF-8 builder buffers that can coexist while encoding up to four bytes per
+// rune. The same conservative 36-byte factor also includes slice/buffer growth
+// slack that is not visible in the retained result size.
+func implodeWorkingSetTooLarge(n int) bool {
+	return MaxAlloc > 0 && int64(n) > MaxAlloc/36
+}
+
 // overStackLimit reports whether the interpreter's own live stacks exceed
 // MaxAlloc. Deep or infinite recursion, such as `def f: [f]; f`, grows these
 // stacks without ever completing a value, so the value meter never charges it.
@@ -278,9 +220,9 @@ func arrayTooLarge(n int) bool {
 func (env *env) overStackLimit() bool {
 	return int64(len(env.stack.data))*24+
 		int64(len(env.paths.data))*24+
-		int64(len(env.scopes.data))*48+
+		int64(len(env.scopes.data))*56+
 		int64(len(env.values))*16+
-		int64(len(env.forks))*72 > MaxAlloc
+		int64(len(env.forks))*80 > MaxAlloc
 }
 
 // decodeJSONLimited decodes one JSON value from dec, tracking the cumulative
